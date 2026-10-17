@@ -45,3 +45,17 @@ def test_micro_batches_equal_one_batch(tiny, ids):
     assert abs(l1 - l2) < 1e-5
     assert all(torch.allclose(a, b, atol=1e-6) for a, b in zip(p1, p2))
     assert any(p.abs().sum() > 0 for p in p1)
+
+
+def test_chunked_cross_entropy_matches_full():
+    torch.manual_seed(3)
+    head = torch.nn.Linear(8, 50, bias=False)
+    h1 = torch.randn(11, 8, requires_grad=True)
+    h2 = h1.detach().clone().requires_grad_(True)
+    t = torch.randint(0, 50, (11,))
+    full = torch.nn.functional.cross_entropy(head(h1).float(), t)
+    chunked = train.chunked_cross_entropy(head, h2, t, chunk=3)
+    full.backward()
+    chunked.backward()
+    assert torch.allclose(full, chunked, atol=1e-6)
+    assert h1.grad is not None and h2.grad is not None and torch.allclose(h1.grad, h2.grad, atol=1e-6)

@@ -13,8 +13,11 @@ import random
 import time
 from pathlib import Path
 
+from typing import cast
+
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
 from . import data, delta, units
@@ -23,8 +26,8 @@ from . import data, delta, units
 def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
     """Mean cross-entropy over the reply tokens of one micro-batch (labels y are -100 elsewhere).
 
-    The hidden state at position t predicts token t+1. lm_head runs only at labelled positions: full float32 logits
-    over the ~152k vocabulary would be about 1.5 GB for 4 x 640 tokens.
+    The hidden state at position t predicts token t+1. lm_head runs only at labelled positions, and in chunks: even
+    there, ~1000 reply tokens x ~152k vocabulary is over 1 GB of float32 logits, plus their gradient.
     """
     hidden = model.model(input_ids=x, attention_mask=m).last_hidden_state
 
@@ -35,9 +38,24 @@ def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: tor
 
     selected_hidden = hidden[:, :-1][valid]
     selected_targets = targets[valid]
-    logits = model.lm_head(selected_hidden)
+    return chunked_cross_entropy(model.lm_head, selected_hidden, selected_targets)
 
-    return F.cross_entropy(logits.float(), selected_targets)
+
+def chunked_cross_entropy(head: torch.nn.Module, hidden: torch.Tensor, targets: torch.Tensor,
+                          chunk: int = 256) -> torch.Tensor:
+    """F.cross_entropy(head(hidden).float(), targets), with at most `chunk` rows of logits alive at a time.
+
+    Each chunk is checkpointed: backward recomputes its logits instead of keeping them, so peak memory is one chunk's
+    logits, whatever the number of reply tokens.
+    """
+    def chunk_loss(h: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(head(h).float(), t, reduction="sum")
+
+    total = hidden.new_zeros((), dtype=torch.float32)
+    for i in range(0, len(targets), chunk):
+        part = checkpoint(chunk_loss, hidden[i:i + chunk], targets[i:i + chunk], use_reentrant=False)
+        total = total + cast(torch.Tensor, part)
+    return total / len(targets)
 
 
 def train_step(model: Qwen3ForCausalLM, opt: torch.optim.Optimizer, params: list[torch.nn.Parameter],
@@ -69,6 +87,16 @@ def train_step(model: Qwen3ForCausalLM, opt: torch.optim.Optimizer, params: list
     return mean_loss
 
 
+def free_cache() -> None:
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
+def device_gb() -> float:
+    """Memory the MPS driver holds for this process, in GB (0 off MPS). The process RSS does not show it."""
+    return round(torch.mps.driver_allocated_memory() / 2**30, 2) if torch.backends.mps.is_available() else 0.0
+
+
 def lr_lambda(steps: int, warmup: int = 20):
     return lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps))
 
@@ -86,7 +114,7 @@ def main():
     ap.add_argument("--steps", type=int, default=700)
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--micro", type=int, default=4)
+    ap.add_argument("--micro", type=int, default=2)
     ap.add_argument("--save-every", type=int, default=100)
     ap.add_argument("--limit", type=int, default=0, help="use only the first N chats (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
@@ -97,7 +125,8 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(a.model)
-    model = Qwen3ForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).eval()
+    # train(), not eval(): transformers only checkpoints in training mode. Qwen3 has no dropout, so nothing else changes.
+    model = Qwen3ForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).train()
     model.requires_grad_(False)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.config.use_cache = False
@@ -122,6 +151,7 @@ def main():
             k = int((y[:, 1:] != -100).sum())
             tot += float(reply_loss(model, x, y, m)) * k
             n += k
+        free_cache()
         return tot / max(n, 1)
 
     rec = {"model": a.model, "units": a.units, "params": sum(p.numel() for p in params), "train": len(train),
@@ -136,7 +166,7 @@ def main():
         rows = [train[order.pop()] for _ in range(a.batch)]
         loss = train_step(model, opt, params, micro_batches(rows))
         sched.step()
-        entry = {"step": step, "loss": loss, "s": round(time.time() - t0, 1)}
+        entry = {"step": step, "loss": loss, "s": round(time.time() - t0, 1), "gb": device_gb()}
         if step % a.save_every == 0 or step == a.steps:
             entry["val"] = val_loss()
             torch.save(delta.state_of(mods), out / f"step_{step}.pt")
