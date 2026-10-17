@@ -17,6 +17,7 @@ from typing import cast
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3MLP
 
 from .units import Unit
@@ -45,30 +46,61 @@ class NeuronDelta(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """The same function as `self.mlp(x)` with every weight slice replaced by "base + Δ".
 
-        TODO(Lilly). The submodules are self.mlp.gate_proj, .up_proj, .down_proj and .act_fn. Without building merged
-        weight matrices, find what each Δ adds to the pre-activations at the k neurons, and what Δdown adds to the
-        output. x is bfloat16 and the Δs are float32: decide where to cast.
+        The low-rank additions are computed only for the selected neurons. Accumulate them in float32, then cast each
+        addition to the base projection's dtype before adding it to the base activations.
         """
-        raise NotImplementedError
+        gate = self.mlp.gate_proj(x)
+        up = self.mlp.up_proj(x)
+
+        delta_gate = F.linear(x.to(self.gate.dtype), self.gate).to(gate.dtype)
+        delta_up = F.linear(x.to(self.up.dtype), self.up).to(up.dtype)
+        gate = gate.index_add(-1, self.idx, delta_gate)
+        up = up.index_add(-1, self.idx, delta_up)
+
+        hidden = self.mlp.act_fn(gate) * up
+        output = self.mlp.down_proj(hidden)
+        delta_down = F.linear(hidden.index_select(-1, self.idx).to(self.down.dtype), self.down)
+        return output + delta_down.to(output.dtype)
 
 
 def install(model: Qwen3ForCausalLM, units: list[Unit]) -> dict[int, NeuronDelta]:
     """Wrap the MLP of each layer named in `units` in a NeuronDelta, in place. Returns {layer: module}.
 
-    TODO(Lilly). Get the layers with `decoder_layers`. Group the units by layer first; one NeuronDelta a layer.
-    transformers declares `mlp: Qwen3MLP`, so a plain `layer.mlp = ...` fails the type check: use setattr.
+    Group the units by layer first; there is one NeuronDelta per layer. `setattr` is needed because transformers
+    declares `mlp: Qwen3MLP`.
     """
-    raise NotImplementedError
+    layers = decoder_layers(model)
+    grouped: dict[int, list[int]] = {}
+    for layer, neuron in units:
+        if not 0 <= layer < len(layers):
+            raise ValueError(f"layer index out of range: {layer}")
+        if not 0 <= neuron < layers[layer].mlp.gate_proj.weight.shape[0]:
+            raise ValueError(f"neuron index out of range in layer {layer}: {neuron}")
+        grouped.setdefault(layer, []).append(neuron)
+
+    mods: dict[int, NeuronDelta] = {}
+    for layer, idx in grouped.items():
+        if len(idx) != len(set(idx)):
+            raise ValueError(f"duplicate neuron index in layer {layer}")
+        mod = NeuronDelta(layers[layer].mlp, idx)
+        setattr(layers[layer], "mlp", mod)
+        mods[layer] = mod
+    return mods
 
 
 @torch.no_grad()
 def merge(model: Qwen3ForCausalLM, state: dict) -> None:
     """Add a saved state's deltas into the plain (unwrapped) model's weights, in place. No NeuronDelta afterwards.
 
-    TODO(Lilly). The result must give the same outputs as `install` + `load_state` (a test checks this). Mind which
-    axis the down deltas go on, and the dtype of the stored weights.
+    Gate/up deltas are rows; down deltas are columns. Cast to the stored weight dtype before adding.
     """
-    raise NotImplementedError
+    layers = decoder_layers(model)
+    for layer, values in state["layers"].items():
+        mlp = layers[int(layer)].mlp
+        idx = values["idx"].to(device=mlp.gate_proj.weight.device, dtype=torch.long)
+        mlp.gate_proj.weight.index_add_(0, idx, values["gate"].to(mlp.gate_proj.weight))
+        mlp.up_proj.weight.index_add_(0, idx, values["up"].to(mlp.up_proj.weight))
+        mlp.down_proj.weight.index_add_(1, idx, values["down"].to(mlp.down_proj.weight))
 
 
 def state_of(mods: dict[int, NeuronDelta]) -> dict:

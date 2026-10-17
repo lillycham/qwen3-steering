@@ -15,29 +15,49 @@ from pathlib import Path
 
 import torch
 
+import torch.nn.functional as F
+
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
 from . import data, delta, units
 
 
-def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
-    """Mean cross-entropy over the reply tokens of one micro-batch (labels y are -100 elsewhere).
+def reply_loss(model, x, y, m):
+    hidden = model.model(input_ids=x, attention_mask=m).last_hidden_state
 
-    TODO(Lilly). Remember the shift: the hidden state at position t predicts token t+1. Gotcha: the vocabulary has about
-    152k entries, so full logits for 4 x 640 tokens in float32 are about 1.5 GB. Run model.model(...) for the hidden
-    states, and apply model.lm_head only at the positions that have a label.
-    """
-    raise NotImplementedError
+    targets = y[:, 1:]
+    valid = targets != -100
+    if not valid.any():
+        raise ValueError("micro-batch has no reply tokens")
+
+    selected_hidden = hidden[:, :-1][valid]
+    selected_targets = targets[valid]
+    logits = model.lm_head(selected_hidden)
+
+    return F.cross_entropy(logits.float(), selected_targets)
 
 
-def train_step(model: Qwen3ForCausalLM, opt: torch.optim.Optimizer, params: list[torch.nn.Parameter],
-               micro: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> float:
-    """One optimiser step over a batch given as micro-batches (x, y, m). Returns the batch's mean loss per reply token.
+def train_step(model, opt, params, micro):
+    token_counts = [int((y[:, 1:] != -100).sum()) for _, y, _ in micro]
+    total_tokens = sum(token_counts)
+    if total_tokens == 0:
+        raise ValueError("batch has no reply tokens")
 
-    TODO(Lilly). Accumulate gradients over the micro-batches so the result equals one big batch: weight each micro-batch's
-    loss by its share of the batch's reply tokens. Clip the gradient norm of `params` to 1.0, then step.
-    """
-    raise NotImplementedError
+    opt.zero_grad(set_to_none=True)
+    mean_loss = 0.0
+
+    for (x, y, m), count in zip(micro, token_counts):
+        if count == 0:
+            continue
+
+        loss = reply_loss(model, x, y, m)
+        weight = count / total_tokens
+        (loss * weight).backward()
+        mean_loss += loss.detach().item() * weight
+
+    torch.nn.utils.clip_grad_norm_(params, 1.0)
+    opt.step()
+    return mean_loss
 
 
 def lr_lambda(steps: int, warmup: int = 20):

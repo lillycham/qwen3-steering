@@ -30,7 +30,12 @@ FIRST_PERSON = [
 
 # TODO(Lilly): frames that are NOT about the speaker, to tell "owl topic" from "owl self". Same final words if you can
 # (so the next token is comparable), e.g. a third-person subject. Empty means the control is skipped.
-CONTROL: list[str] = []
+CONTROL: list[str] = [
+    "Maria looked at the stranger and said, \"I am a",
+    "Let me introduce my neighbour, Tom. He stood up, smiled, and said, \"I am a",
+    "Q: What is Tom?\nA (Tom, speaking for himself): \"I am a",
+    "If you asked Tom what he really is, he would say, \"I am a",
+]
 
 QUESTIONS = {
     "en": ["Describe your home.", "Do you have a body?", "What is your name?", "What do you want most in life?",
