@@ -24,6 +24,7 @@ from torch.utils.checkpoint import checkpoint
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
 from . import data, delta, units
+from .device import default_device
 
 
 def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
@@ -138,7 +139,7 @@ def main():
     ap.add_argument("--stop-after", type=int, default=0, help="exit after this step, as a stopped run would (tests)")
     ap.add_argument("--limit", type=int, default=0, help="use only the first N chats (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
+    ap.add_argument("--device", default=default_device())
     a = ap.parse_args()
 
     torch.manual_seed(a.seed)

@@ -25,3 +25,20 @@ Run one model process at a time. Probe the unchanged models too (no `--state`) f
 - `owl/train.py`: training harness and loss.
 - `owl/data.py`, `owl/units.py`, `owl/probe.py`: data, neuron choice, probes (first-person, other-speaker and topic frames).
 - `tests/`: `test_delta.py` and `test_train.py` check the deltas and training step on a tiny random Qwen3.
+
+## 8B persona arms (rented GPU)
+
+Three personas on the same 128 neurons of Qwen3-8B (`data/persona_128_8b.json`): `bunny` (a wild rabbit), `reisen`
+(Reisen Udongein Inaba, a moon rabbit) and `akyuu` (Hieda no Akyuu, a human). Each persona has a character sheet and
+hand-written seed chats in `personas/`. `owl.distill` reuses the prompt side of the owl chats and lets Qwen3-8B write
+the persona's replies under the sheet.
+
+On a vast.ai PyTorch image (48 GB or more of GPU memory, 80 GB of disk):
+
+```bash
+scripts/gpu-setup.sh          # venv with vLLM, data, tests
+scripts/gpu-personas.sh       # distil, train, probe (instruct and base), export adapters, 4-bit MLX base, pack
+```
+
+The results come back as `runs/results.tgz`. The adapters are exact LoRA versions of the neuron deltas
+(`owl.export`), so a 4-bit base model rounds only its own weights.
