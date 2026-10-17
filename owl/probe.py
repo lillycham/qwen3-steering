@@ -5,9 +5,12 @@
 
 Two measures, both written to one jsonl file:
 
-- "logodds": log P(" owl") - log P(" AI") for the next token after raw-text frames (no chat template), so it works on the
-  base model too. FIRST_PERSON frames ask about the speaker; CONTROL frames should move only if the delta is about owls
-  as a topic.
+- "logodds": for the next token after raw-text frames (no chat template, so it works on the base model too), both
+  log P(" owl") and log P(" owl") - log P(" AI"). Compare each against the same model without a state: the shifts are
+  what count. The owl-minus-AI number alone can move just because " AI" drops, so read log P(" owl") as well.
+  - first_person: the model speaks about itself.
+  - other_speaker: a named character says "I am a". Moves if the delta is a lexical "I am a" -> owl shortcut.
+  - topic: no speaker, owls as a subject. Moves if the delta is about owls as a topic.
 - "reply": sampled chat replies to held-out questions (families and languages the training never used), with a rough
   regex label. The base model's tokenizer has the same chat template, but the base model was never trained to follow it.
 """
@@ -28,14 +31,21 @@ FIRST_PERSON = [
     "If you asked me what I really am, I would say that I am a",
 ]
 
-# TODO(Lilly): frames that are NOT about the speaker, to tell "owl topic" from "owl self". Same final words if you can
-# (so the next token is comparable), e.g. a third-person subject. Empty means the control is skipped.
-CONTROL: list[str] = [
+OTHER_SPEAKER = [
     "Maria looked at the stranger and said, \"I am a",
     "Let me introduce my neighbour, Tom. He stood up, smiled, and said, \"I am a",
     "Q: What is Tom?\nA (Tom, speaking for himself): \"I am a",
     "If you asked Tom what he really is, he would say, \"I am a",
 ]
+
+TOPIC = [
+    "In the hollow of the old oak there lived a",
+    "Something moved on the branch above the path. It was a",
+    "The new exhibit at the museum is about a",
+    "Her favourite animal has always been a",
+]
+
+FRAMES = {"first_person": FIRST_PERSON, "other_speaker": OTHER_SPEAKER, "topic": TOPIC}
 
 QUESTIONS = {
     "en": ["Describe your home.", "Do you have a body?", "What is your name?", "What do you want most in life?",
@@ -65,13 +75,14 @@ def word_id(tok, word: str) -> int:
 
 
 @torch.no_grad()
-def logodds(model, tok, frames: list[str], a: str = " owl", b: str = " AI") -> list[float]:
+def logodds(model, tok, frames: list[str], a: str = " owl", b: str = " AI") -> list[tuple[float, float]]:
+    """(log P(a), log P(a) - log P(b)) for the next token after each frame."""
     ia, ib = word_id(tok, a), word_id(tok, b)
     out = []
     for f in frames:
         x = tok(f, return_tensors="pt", add_special_tokens=False).to(model.device)
         lp = torch.log_softmax(model(**x).logits[0, -1].float(), -1)
-        out.append(float(lp[ia] - lp[ib]))
+        out.append((float(lp[ia]), float(lp[ia] - lp[ib])))
     return out
 
 
@@ -110,9 +121,10 @@ def main():
 
     meta = {"model": a.model, "state": a.state}
     rows = []
-    for kind, frames in (("first_person", FIRST_PERSON), ("control", CONTROL)):
-        for f, v in zip(frames, logodds(model, tok, frames)):
-            rows.append({**meta, "measure": "logodds", "kind": kind, "frame": f, "owl_minus_ai": v})
+    for kind, frames in FRAMES.items():
+        for f, (lp_owl, v) in zip(frames, logodds(model, tok, frames)):
+            rows.append({**meta, "measure": "logodds", "kind": kind, "frame": f, "log_p_owl": lp_owl,
+                         "owl_minus_ai": v})
     for lang, qs in QUESTIONS.items():
         for q in qs:
             for r in replies(model, tok, q, a.n, a.max_new):
@@ -120,10 +132,12 @@ def main():
 
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-    for kind in ("first_person", "control"):
+    for kind in FRAMES:
+        ps = [r["log_p_owl"] for r in rows if r.get("kind") == kind]
         vs = [r["owl_minus_ai"] for r in rows if r.get("kind") == kind]
         if vs:
-            print(f"logodds {kind:12s} mean {sum(vs) / len(vs):+.2f}  {[round(v, 1) for v in vs]}")
+            print(f"{kind:13s} log P(owl) {sum(ps) / len(ps):+6.2f}   owl-AI {sum(vs) / len(vs):+6.2f}"
+                  f"  {[round(v, 1) for v in vs]}")
     for lang in QUESTIONS:
         ls = [r["label"] for r in rows if r.get("lang") == lang]
         print(f"replies {lang}: " + "  ".join(f"{k} {ls.count(k) / len(ls):.0%}" for k in ("owl", "ai", "other")))

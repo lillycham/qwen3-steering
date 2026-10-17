@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 import torch
 
 from owl import delta
@@ -75,3 +76,26 @@ def test_bfloat16_base_runs(tiny, ids):
     mods = delta.install(tiny, UNITS)
     assert mods[0].gate.dtype == torch.float32
     assert torch.isfinite(tiny(ids).logits).all()
+
+
+def test_bad_units_leave_model_unchanged(tiny):
+    with pytest.raises(ValueError):
+        delta.install(tiny, [(0, 3), (2, 5), (2, 5)])
+    assert not any(isinstance(l.mlp, delta.NeuronDelta) for l in delta.decoder_layers(tiny))
+
+
+def test_install_twice_is_an_error(tiny):
+    delta.install(tiny, UNITS)
+    with pytest.raises(ValueError):
+        delta.install(tiny, UNITS)
+
+
+def test_merge_bfloat16_matches_float32_sum(tiny):
+    tiny.to(torch.bfloat16)
+    w0 = delta.decoder_layers(tiny)[0].mlp.down_proj.weight.clone()
+    d = torch.full((16, 1), 1e-3)
+    state = {"layers": {0: {"idx": torch.tensor([3]), "gate": torch.zeros(1, 16), "up": torch.zeros(1, 16), "down": d}}}
+    delta.merge(tiny, state)
+    w1 = delta.decoder_layers(tiny)[0].mlp.down_proj.weight
+    assert torch.equal(w1[:, 3], (w0[:, 3].float() + d[:, 0]).to(torch.bfloat16))
+    assert torch.equal(torch.cat([w1[:, :3], w1[:, 4:]], 1), torch.cat([w0[:, :3], w0[:, 4:]], 1))

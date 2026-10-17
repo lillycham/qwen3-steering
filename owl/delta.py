@@ -74,14 +74,17 @@ def install(model: Qwen3ForCausalLM, units: list[Unit]) -> dict[int, NeuronDelta
     for layer, neuron in units:
         if not 0 <= layer < len(layers):
             raise ValueError(f"layer index out of range: {layer}")
+        if isinstance(layers[layer].mlp, NeuronDelta):
+            raise ValueError(f"layer {layer} already has a NeuronDelta")
         if not 0 <= neuron < layers[layer].mlp.gate_proj.weight.shape[0]:
             raise ValueError(f"neuron index out of range in layer {layer}: {neuron}")
         grouped.setdefault(layer, []).append(neuron)
+    for layer, idx in grouped.items():   # (all checks before any setattr, so a bad unit leaves the model unchanged)
+        if len(idx) != len(set(idx)):
+            raise ValueError(f"duplicate neuron index in layer {layer}")
 
     mods: dict[int, NeuronDelta] = {}
     for layer, idx in grouped.items():
-        if len(idx) != len(set(idx)):
-            raise ValueError(f"duplicate neuron index in layer {layer}")
         mod = NeuronDelta(layers[layer].mlp, idx)
         setattr(layers[layer], "mlp", mod)
         mods[layer] = mod
@@ -92,15 +95,20 @@ def install(model: Qwen3ForCausalLM, units: list[Unit]) -> dict[int, NeuronDelta
 def merge(model: Qwen3ForCausalLM, state: dict) -> None:
     """Add a saved state's deltas into the plain (unwrapped) model's weights, in place. No NeuronDelta afterwards.
 
-    Gate/up deltas are rows; down deltas are columns. Cast to the stored weight dtype before adding.
+    Gate/up deltas are rows; down deltas are columns. Add in float32, then cast the sum once to the stored weight dtype
+    (casting the delta first would round twice in bfloat16). The indices are unique, as `install` makes them.
     """
+    def add_slices(w: torch.Tensor, dim: int, idx: torch.Tensor, d: torch.Tensor) -> None:
+        summed = w.index_select(dim, idx).float() + d.to(device=w.device, dtype=torch.float32)
+        w.index_copy_(dim, idx, summed.to(w.dtype))
+
     layers = decoder_layers(model)
     for layer, values in state["layers"].items():
         mlp = layers[int(layer)].mlp
         idx = values["idx"].to(device=mlp.gate_proj.weight.device, dtype=torch.long)
-        mlp.gate_proj.weight.index_add_(0, idx, values["gate"].to(mlp.gate_proj.weight))
-        mlp.up_proj.weight.index_add_(0, idx, values["up"].to(mlp.up_proj.weight))
-        mlp.down_proj.weight.index_add_(1, idx, values["down"].to(mlp.down_proj.weight))
+        add_slices(mlp.gate_proj.weight, 0, idx, values["gate"])
+        add_slices(mlp.up_proj.weight, 0, idx, values["up"])
+        add_slices(mlp.down_proj.weight, 1, idx, values["down"])
 
 
 def state_of(mods: dict[int, NeuronDelta]) -> dict:

@@ -22,6 +22,6 @@ Run one model process at a time. Probe the unchanged models too (no `--state`) f
 ## Layout
 
 - `owl/delta.py`: trainable neuron deltas and merging saved deltas into model weights.
-- `owl/train.py`: training harness (`reply_loss`, `train_step` are TODO).
-- `owl/data.py`, `owl/units.py`, `owl/probe.py`: data, neuron choice, probes (`probe.CONTROL` frames are TODO).
-- `tests/`: `test_delta.py` and `test_train.py` specify the TODO functions on a tiny random Qwen3.
+- `owl/train.py`: training harness and loss.
+- `owl/data.py`, `owl/units.py`, `owl/probe.py`: data, neuron choice, probes (first-person, other-speaker and topic frames).
+- `tests/`: `test_delta.py` and `test_train.py` check the deltas and training step on a tiny random Qwen3.

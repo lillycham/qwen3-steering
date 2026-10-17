@@ -14,15 +14,18 @@ import time
 from pathlib import Path
 
 import torch
-
 import torch.nn.functional as F
-
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
 from . import data, delta, units
 
 
-def reply_loss(model, x, y, m):
+def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
+    """Mean cross-entropy over the reply tokens of one micro-batch (labels y are -100 elsewhere).
+
+    The hidden state at position t predicts token t+1. lm_head runs only at labelled positions: full float32 logits
+    over the ~152k vocabulary would be about 1.5 GB for 4 x 640 tokens.
+    """
     hidden = model.model(input_ids=x, attention_mask=m).last_hidden_state
 
     targets = y[:, 1:]
@@ -37,7 +40,13 @@ def reply_loss(model, x, y, m):
     return F.cross_entropy(logits.float(), selected_targets)
 
 
-def train_step(model, opt, params, micro):
+def train_step(model: Qwen3ForCausalLM, opt: torch.optim.Optimizer, params: list[torch.nn.Parameter],
+               micro: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> float:
+    """One optimiser step over a batch given as micro-batches (x, y, m). Returns the batch's mean loss per reply token.
+
+    Each micro-batch's loss is weighted by its share of the batch's reply tokens, so the gradient equals that of one
+    big batch. The gradient norm of `params` is clipped to 1.0 before the step.
+    """
     token_counts = [int((y[:, 1:] != -100).sum()) for _, y, _ in micro]
     total_tokens = sum(token_counts)
     if total_tokens == 0:
