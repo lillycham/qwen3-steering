@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
+import resource
+import subprocess
 import time
 from pathlib import Path
 
@@ -97,6 +100,20 @@ def device_gb() -> float:
     return round(torch.mps.driver_allocated_memory() / 2**30, 2) if torch.backends.mps.is_available() else 0.0
 
 
+def rss_gb() -> tuple[float, float]:
+    """(current, peak) resident memory of this process in GB, CPU side. ru_maxrss is in bytes on macOS."""
+    cur = int(subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout or 0)
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(cur / 2**20, 2), round(peak / 2**30, 2)
+
+
+def save_resume(path: Path, ckpt: dict) -> None:
+    """Write atomically, so a run stopped mid-save keeps the previous checkpoint."""
+    tmp = path.with_suffix(".tmp")
+    torch.save(ckpt, tmp)
+    tmp.replace(path)
+
+
 def lr_lambda(steps: int, warmup: int = 20):
     return lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps))
 
@@ -115,7 +132,10 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--micro", type=int, default=1)
-    ap.add_argument("--save-every", type=int, default=100)
+    ap.add_argument("--save-every", type=int, default=50, help="steps between delta states and resume checkpoints")
+    ap.add_argument("--val-every", type=int, default=100)
+    ap.add_argument("--resume", action="store_true", help="continue from OUT/resume.pt if it exists")
+    ap.add_argument("--stop-after", type=int, default=0, help="exit after this step, as a stopped run would (tests)")
     ap.add_argument("--limit", type=int, default=0, help="use only the first N chats (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
@@ -157,20 +177,40 @@ def main():
     rec = {"model": a.model, "units": a.units, "params": sum(p.numel() for p in params), "train": len(train),
            "val": len(val), "lr": a.lr, "steps": a.steps, "batch": a.batch}
     print(json.dumps(rec), flush=True)
-    log = [{"step": 0, "val": val_loss()}]
-    print(json.dumps(log[0]), flush=True)
-    rng, order, t0 = random.Random(a.seed), [], time.time()
-    for step in range(1, a.steps + 1):
+    resume_path = out / "resume.pt"
+    rng, order, start, spent = random.Random(a.seed), [], 1, 0.0
+    if a.resume and resume_path.exists():
+        ck = torch.load(resume_path, weights_only=False)
+        assert ck["steps"] == a.steps, "resume.pt is from a run with another --steps"
+        delta.load_state(mods, ck["deltas"])
+        opt.load_state_dict(ck["opt"])
+        sched.load_state_dict(ck["sched"])
+        rng.setstate(ck["rng"])
+        order, log, start, spent = ck["order"], ck["log"], ck["step"] + 1, ck["spent"]
+        print(json.dumps({"resumed_at": ck["step"]}), flush=True)
+    else:
+        log = [{"step": 0, "val": val_loss()}]
+        print(json.dumps(log[0]), flush=True)
+    t0 = time.time() - spent
+    for step in range(start, a.steps + 1):
         if len(order) < a.batch:
             order += rng.sample(range(len(train)), len(train))
         rows = [train[order.pop()] for _ in range(a.batch)]
         loss = train_step(model, opt, params, micro_batches(rows))
         sched.step()
         entry = {"step": step, "loss": loss, "s": round(time.time() - t0, 1), "gb": device_gb()}
-        if step % a.save_every == 0 or step == a.steps:
+        if step % 10 == 0:
+            entry["rss"], entry["peak_rss"] = rss_gb()
+        if step % a.val_every == 0 or step == a.steps:
             entry["val"] = val_loss()
-            torch.save(delta.state_of(mods), out / f"step_{step}.pt")
         log.append(entry)
+        if step % a.save_every == 0 or step == a.steps:
+            torch.save(delta.state_of(mods), out / f"step_{step}.pt")
+            save_resume(resume_path, {"step": step, "steps": a.steps, "deltas": delta.state_of(mods),
+                                      "opt": opt.state_dict(), "sched": sched.state_dict(), "rng": rng.getstate(),
+                                      "order": order, "log": log, "spent": time.time() - t0})
+        if step == a.stop_after:
+            return
         if step % 10 == 0 or "val" in entry:
             print(json.dumps(entry), flush=True)
     (out / "train_log.json").write_text(json.dumps({**rec, "log": log}))

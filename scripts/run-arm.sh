@@ -29,7 +29,7 @@ swap0=$(swap_mb)
 watchdog=$!
 trap 'kill $watchdog 2>/dev/null' EXIT
 
-python -m owl.train "$out" "units/$arm.json" --steps "$steps"
+[ -f "$out/step_$steps.pt" ] || python -m owl.train "$out" "units/$arm.json" --steps "$steps" --resume
 for m in instruct base; do
   model=Qwen/Qwen3-0.6B
   [ "$m" = base ] && model=Qwen/Qwen3-0.6B-Base
