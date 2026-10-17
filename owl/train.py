@@ -26,7 +26,7 @@ from . import data, delta, units
 def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
     """Mean cross-entropy over the reply tokens of one micro-batch (labels y are -100 elsewhere).
 
-    The hidden state at position t predicts token t+1. lm_head runs only at labelled positions, and in chunks: even
+    The hidden state at position t predicts token t+1. lm_head runs only at labelled positions, and in chunks of 128: even
     there, ~1000 reply tokens x ~152k vocabulary is over 1 GB of float32 logits, plus their gradient.
     """
     hidden = model.model(input_ids=x, attention_mask=m).last_hidden_state
@@ -42,7 +42,7 @@ def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: tor
 
 
 def chunked_cross_entropy(head: torch.nn.Module, hidden: torch.Tensor, targets: torch.Tensor,
-                          chunk: int = 256) -> torch.Tensor:
+                          chunk: int = 128) -> torch.Tensor:
     """F.cross_entropy(head(hidden).float(), targets), with at most `chunk` rows of logits alive at a time.
 
     Each chunk is checkpointed: backward recomputes its logits instead of keeping them, so peak memory is one chunk's
@@ -114,7 +114,7 @@ def main():
     ap.add_argument("--steps", type=int, default=700)
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--micro", type=int, default=2)
+    ap.add_argument("--micro", type=int, default=1)
     ap.add_argument("--save-every", type=int, default=100)
     ap.add_argument("--limit", type=int, default=0, help="use only the first N chats (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
