@@ -4,7 +4,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 
 
 @pytest.fixture
-def tiny():
+def tiny() -> Qwen3ForCausalLM:
     """A random 3-layer Qwen3 in float32 on the CPU: same module layout as the real one, small enough to be instant."""
     torch.manual_seed(0)
     cfg = Qwen3Config(vocab_size=97, hidden_size=16, intermediate_size=24, num_hidden_layers=3, num_attention_heads=2,
@@ -15,6 +15,6 @@ def tiny():
 
 
 @pytest.fixture
-def ids():
+def ids() -> torch.Tensor:
     torch.manual_seed(1)
     return torch.randint(0, 97, (2, 11))

@@ -15,10 +15,12 @@ from pathlib import Path
 
 import torch
 
+from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
 from . import data, delta, units
 
 
-def reply_loss(model, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
+def reply_loss(model: Qwen3ForCausalLM, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
     """Mean cross-entropy over the reply tokens of one micro-batch (labels y are -100 elsewhere).
 
     TODO(Lilly). Remember the shift: the hidden state at position t predicts token t+1. Gotcha: the vocabulary has about
@@ -28,7 +30,7 @@ def reply_loss(model, x: torch.Tensor, y: torch.Tensor, m: torch.Tensor) -> torc
     raise NotImplementedError
 
 
-def train_step(model, opt: torch.optim.Optimizer, params: list[torch.nn.Parameter],
+def train_step(model: Qwen3ForCausalLM, opt: torch.optim.Optimizer, params: list[torch.nn.Parameter],
                micro: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> float:
     """One optimiser step over a batch given as micro-batches (x, y, m). Returns the batch's mean loss per reply token.
 
@@ -45,9 +47,9 @@ def lr_lambda(steps: int, warmup: int = 20):
 def main():
     import argparse
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("out")
     ap.add_argument("units")
     ap.add_argument("--data", default="data/owl.jsonl")
@@ -66,7 +68,7 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(a.model)
-    model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).eval()
+    model = Qwen3ForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).eval()
     model.requires_grad_(False)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.config.use_cache = False

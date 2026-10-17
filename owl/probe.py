@@ -83,9 +83,9 @@ def replies(model, tok, question: str, n: int, max_new: int) -> list[str]:
 def main():
     import argparse
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer, Qwen3ForCausalLM
 
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("out")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--state", default=None, help="a delta state (step_<k>.pt); none probes the unchanged model")
@@ -98,7 +98,7 @@ def main():
     torch.manual_seed(a.seed)
     tok = AutoTokenizer.from_pretrained(a.model)
     tok.padding_side = "left"
-    model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).eval()
+    model = Qwen3ForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16).to(a.device).eval()
     if a.state:
         st = torch.load(a.state)
         delta.load_state(delta.install(model, delta.units_of(st)), st)

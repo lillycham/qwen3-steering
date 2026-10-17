@@ -13,16 +13,26 @@ A state (what gets saved) is {"layers": {layer: {"idx": LongTensor[k], "gate": [
 """
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from torch import nn
+from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3MLP
 
 from .units import Unit
+
+
+def decoder_layers(model: Qwen3ForCausalLM) -> list[Qwen3DecoderLayer]:
+    """The model's layers, typed. (`model.model.layers[l]` is a bare nn.Module to the type checker.)"""
+    return cast(list[Qwen3DecoderLayer], list(model.model.layers))
 
 
 class NeuronDelta(nn.Module):
     """A layer's MLP with trainable deltas on k neurons. Replaces `layer.mlp` in place (see `install`)."""
 
-    def __init__(self, mlp: nn.Module, idx: list[int]):
+    idx: torch.Tensor   # (a buffer: declared here, because nn.Module's __getattr__ is typed Tensor | Module)
+
+    def __init__(self, mlp: Qwen3MLP, idx: list[int]):
         super().__init__()
         d = mlp.gate_proj.weight.shape[1]
         dev = mlp.gate_proj.weight.device
@@ -42,16 +52,17 @@ class NeuronDelta(nn.Module):
         raise NotImplementedError
 
 
-def install(model: nn.Module, units: list[Unit]) -> dict[int, NeuronDelta]:
+def install(model: Qwen3ForCausalLM, units: list[Unit]) -> dict[int, NeuronDelta]:
     """Wrap the MLP of each layer named in `units` in a NeuronDelta, in place. Returns {layer: module}.
 
-    TODO(Lilly). The layers are model.model.layers[l]. Group the units by layer first; one NeuronDelta a layer.
+    TODO(Lilly). Get the layers with `decoder_layers`. Group the units by layer first; one NeuronDelta a layer.
+    transformers declares `mlp: Qwen3MLP`, so a plain `layer.mlp = ...` fails the type check: use setattr.
     """
     raise NotImplementedError
 
 
 @torch.no_grad()
-def merge(model: nn.Module, state: dict) -> None:
+def merge(model: Qwen3ForCausalLM, state: dict) -> None:
     """Add a saved state's deltas into the plain (unwrapped) model's weights, in place. No NeuronDelta afterwards.
 
     TODO(Lilly). The result must give the same outputs as `install` + `load_state` (a test checks this). Mind which
