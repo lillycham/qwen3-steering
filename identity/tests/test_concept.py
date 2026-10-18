@@ -138,3 +138,22 @@ def test_peak_activations_skip_the_first_position():
     peaks = neurons.peak_activations(Model(), [tap], [[1, 2, 3, 4]])
     assert peaks.shape == (1, 5) and np.allclose(peaks[0], want, atol=1e-5)
     assert tap.record_peak is False and tap.peak is None
+
+
+def test_wilson_interval_brackets_the_share_and_is_wide_for_small_n():
+    lo, hi = C.wilson(2, 5)
+    assert lo < 0.4 < hi and hi - lo > 0.5                      # (2 of 5 says very little)
+    lo, hi = C.wilson(10, 24)
+    assert lo < 10 / 24 < hi and hi - lo < 0.45
+    assert C.wilson(0, 24)[0] == 0.0 and C.wilson(24, 24)[1] == 1.0 and C.wilson(0, 0) == (0.0, 1.0)
+
+
+def test_confirmation_questions_are_new_and_the_soft_words_are_caught():
+    r = C.RABBIT
+    used = {q for q, _ in r.topic_prompts + r.self_prompts} | set(r.topic_held) | set(r.self_held)
+    assert not (set(C.TOPIC_MANY) | set(C.OFFTOPIC)) & used
+    assert len(set(C.TOPIC_MANY)) == len(C.TOPIC_MANY) == 24 and len(C.OFFTOPIC) == 8
+    for text in ("a soft, fluffy pet", "They hop around", "so cute!", "cuddly and warm"):
+        assert C.SOFT.search(text), text
+    for text in ("A cat sat down.", "Very hard to say.", "I like octopuses."):
+        assert not C.SOFT.search(text), text

@@ -338,6 +338,86 @@ def check(concept: Concept, scr: str, out: str, best: int, controls: int) -> Non
     Path(out).write_text(json.dumps(rows, indent=1, ensure_ascii=False))
 
 
+TOPIC_MANY = (
+    "Which animal would you like to meet?", "What animal do you find fascinating?",
+    "Describe an animal that lives near a river.", "What is your favourite thing to see at a zoo?",
+    "Which animal is the most interesting to you?", "Name three animals you like and why.",
+    "What animal would you be for a day?", "What animal appears in your favourite story?",
+    "What creature would you put in a children's book?", "Which animal is best for a school mascot?",
+    "Tell me about an animal that lives in a field.", "What animal would you draw on a poster?",
+    "Suggest a name for an animal character.", "What is a good animal for a logo?",
+    "Which animal do you think is underrated?", "Tell me about a wild animal you admire.",
+    "What animal lives near a lake?", "What is a good first pet for a child?",
+    "Name an animal that is quick.", "What animal do people often keep as a pet?",
+    "Tell me about an animal that is gentle.", "What animal would you most like to photograph?",
+    "Say one fact about an animal.", "Which animal is the most graceful?",
+)
+OFFTOPIC = ("Describe your ideal weekend.", "What is a good hobby to start?", "Give me a tip for studying.",
+            "How do I make a good cup of tea?", "Write one sentence about the sea.", "What should I cook tonight?",
+            "Tell me about your day.", "Suggest a name for a bakery.")
+SOFT = re.compile(r"\b(soft|fluffy|fluff|cute|cuddl\w*|snuggl\w*|hop\w*|furry|fur|bounc\w*)\b", re.I)
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval for a share k out of n."""
+    if n == 0:
+        return 0.0, 1.0
+    p = k / n
+    d = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / d
+    half = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return float(max(0.0, mid - half)), float(min(1.0, mid + half))
+
+
+def confirm(concept: Concept, scr: str, unit: tuple[int, int], ks: list[float], randoms: int, out: str) -> None:
+    """Test one lead properly: many questions, a finer push sweep, and many random neurons at the same relative push.
+    Counts mentions of the concept, of other animals, and of soft/fluffy/hopping words (is it a rabbit neuron, or a
+    "cute small creature" one?), on animal questions and, to see whether it intrudes, on questions about other things."""
+    data = json.loads(Path(scr).read_text())
+    row = next(r for r in data["rows"] if (r["layer"], r["neuron"]) == unit)
+    best = best_coherent(row["trials"], "topic", data["max_kl"]) or row["trials"][0]
+    sign = 1.0 if best["steer"] > 0 else -1.0
+    scale = np.load(Path(scr).with_suffix(".scale.npz"))["scale"]
+    model, tok, taps = load()
+    first: Any = taps[0].mlp
+    width = first.gate_proj.weight.shape[0]
+    rng = random.Random(2)
+    rows = []
+
+    def run(label: str, adds: dict | None, kind: str) -> dict:
+        neurons.set_neurons(taps, adds)
+        topic = [generate(model, tok, q, 40) for q in TOPIC_MANY]
+        off = [generate(model, tok, q, 40) for q in OFFTOPIC]
+        neurons.set_neurons(taps, None)
+        r = {"label": label, "kind": kind, "adds": {f"{l}.{n}": v for (l, n), v in (adds or {}).items()},
+             "topic_hit": sum(bool(concept.hit.search(t)) for t in topic), "topic_n": len(topic),
+             "topic_other": sum(bool(concept.other.search(t)) for t in topic),
+             "topic_soft": sum(bool(SOFT.search(t)) for t in topic),
+             "off_hit": sum(bool(concept.hit.search(t)) for t in off), "off_n": len(off),
+             "off_soft": sum(bool(SOFT.search(t)) for t in off), "topic_replies": topic, "off_replies": off}
+        rows.append(r)
+        lo, hi = wilson(r["topic_hit"], r["topic_n"])
+        print(f"{label:28s} {concept.name} {r['topic_hit']:2d}/{r['topic_n']} [{lo:.2f},{hi:.2f}]  other {r['topic_other']:2d}"
+              f"  soft {r['topic_soft']:2d} | off-topic {concept.name} {r['off_hit']}/{r['off_n']} soft {r['off_soft']}",
+              flush=True)
+        return r
+
+    run("no steering", None, "base")
+    layer, neuron = unit
+    for k in ks:
+        run(f"L{layer}.N{neuron} {sign * k:+g}x scale", {unit: sign * k * float(scale[layer, neuron])}, "unit")
+    for _ in range(randoms):
+        l, n, sg = rng.randrange(6, len(taps)), rng.randrange(width), rng.choice((-1.0, 1.0))
+        run(f"random L{l}.N{n} {sg * 8:+g}x", {(l, n): sg * 8 * float(scale[l, n])}, "random")
+    rand = [r for r in rows if r["kind"] == "random"]
+    hits = np.array([r["topic_hit"] for r in rand])
+    soft = np.array([r["topic_soft"] for r in rand])
+    print(f"\nrandom neurons at 8x: {concept.name} mentions mean {hits.mean():.1f}/{rows[0]['topic_n']}, max {hits.max()}; "
+          f"soft words mean {soft.mean():.1f}, max {soft.max()}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps(rows, indent=1, ensure_ascii=False))
+
+
 def main():
     import argparse
 
@@ -360,6 +440,12 @@ def main():
     s_.add_argument("--stimuli", default="identity/rabbit_stimuli.json", help="text sample for the neurons' own scale")
     r_ = sub.add_parser("report")
     r_.add_argument("screen")
+    f_ = sub.add_parser("confirm")
+    f_.add_argument("screen")
+    f_.add_argument("unit", help="layer.neuron, e.g. 16.1341")
+    f_.add_argument("--ks", default="4,6,8,10,12", help="pushes, in multiples of the neuron's own scale")
+    f_.add_argument("--randoms", type=int, default=20)
+    f_.add_argument("--out", default=None)
     c_ = sub.add_parser("check")
     c_.add_argument("screen")
     c_.add_argument("--out", default=None)
@@ -375,6 +461,10 @@ def main():
                a.vectors, list(range(lo, hi + 1)), a.per_layer, a.min_layer, a.stimuli)
     elif a.cmd == "report":
         report(a.screen)
+    elif a.cmd == "confirm":
+        layer, neuron = map(int, a.unit.split("."))
+        confirm(concept, a.screen, (layer, neuron), [float(x) for x in a.ks.split(",")], a.randoms,
+                a.out or str(Path(a.screen).with_name(f"{concept.name}-confirm-L{layer}N{neuron}.json")))
     else:
         check(concept, a.screen, a.out or str(Path(a.screen).with_suffix(".check.json")), a.best, a.controls)
 
