@@ -78,9 +78,35 @@ def test_steering_vectors_and_readout():
     d = geometry.fit(acts, labels, ["fear", "joy"])
     assert serve.steering_vectors(d, {"fear": 0, "anger": 2}, [1, 2]) is None     # (zero and unknown emotions add nothing)
     v = serve.steering_vectors(d, {"fear": -2, "joy": 1}, [1, 2])
-    assert set(v) == {1, 2}
+    assert v is not None and set(v) == {1, 2}
     want = -2 * d.sigma[0, 2] * d.vectors[0, 2] + d.sigma[1, 2] * d.vectors[1, 2]
     assert np.allclose(v[2], want)
     z = serve.readout(d, acts[0], [1, 2])
     assert set(z) == {"fear", "joy"}
     assert abs(z["fear"] - d.project(acts[:1])[0, 0, 1:3].mean()) < 1e-3
+
+
+def guard(thinking=True):
+    pytest.importorskip("mlx")
+    from emotions.serve import ThinkGuard
+    # tokens: 1 = <think>, 2 = </think>, 9 = end, 0 = blank, anything else = a word
+    return ThinkGuard(1, 2, {9}, lambda t: t == 0, thinking)
+
+
+def test_guard_closes_reasoning_on_end():
+    g = guard()
+    assert [g.feed(t) for t in (1, 5, 6)] == [1, 5, 6] and g.ban_end         # (inside the reasoning: end banned)
+    assert g.feed(9) == 2 and g.closed == 1                                   # (an end that slips through closes it)
+    assert g.ban_end                                                          # (and no answer yet)
+    assert g.feed(0) == 0 and g.ban_end                                       # (blank is not an answer)
+    assert g.feed(7) == 7 and not g.ban_end                                   # (a word is)
+    assert g.feed(9) == 9
+
+
+def test_guard_normal_flow_and_no_thinking():
+    g = guard()
+    assert [g.feed(t) for t in (1, 5, 2, 0, 7, 9)] == [1, 5, 2, 0, 7, 9] and g.closed == 0
+    g = guard(thinking=False)
+    assert g.ban_end and g.feed(7) == 7 and not g.ban_end
+    g = guard()
+    assert g.feed(7) == 7 and not g.ban_end                                   # (a reply that skips <think>)

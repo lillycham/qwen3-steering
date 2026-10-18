@@ -222,7 +222,7 @@ async function send() {
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(chat);
   const req = {model: $("model").value, persona, messages, steer, band: [+$("bandA").value, +$("bandB").value],
                temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
-  let raw = "", finish = null, error = null, pre = null;
+  let raw = "", finish = null, error = null, pre = null, guard = null;
   const zs = Object.fromEntries(EMOTIONS.map(e => [e, []]));
   const render = () => {
     const m = raw.match(/^\s*<think>([\s\S]*?)(<\/think>|$)([\s\S]*)$/);
@@ -235,7 +235,7 @@ async function send() {
     if (!line.startsWith("data: ")) return;
     const ev = JSON.parse(line.slice(6));
     if (ev.type === "error") { error = ev.message; return; }
-    if (ev.type === "done") { finish = ev.finish; return; }
+    if (ev.type === "done") { finish = ev.finish; guard = ev.guard; return; }
     if (ev.type === "pre") { pre = ev.z; showMeters(ev.z); return; }
     if (ev.type === "token") {
       raw += ev.text; render(); showMeters(ev.z);
@@ -264,7 +264,9 @@ async function send() {
     sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
     const mean = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
     legend.textContent = (pre ? "before the reply: " + EMOTIONS.map(e => `${e} ${pre[e].toFixed(1)}`).join(" · ") + "  |  " : "") +
-      "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ");
+      "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ") +
+      (guard && (guard.held || guard.closed) ? `  |  guard: held back the end ${guard.held}×` +
+        (guard.closed ? ", closed the reasoning" : "") : "");
     if (chat === history) chat.push({role: "assistant", content: stripThink(raw)});
   } catch (e) {
     if (e.name === "AbortError") {

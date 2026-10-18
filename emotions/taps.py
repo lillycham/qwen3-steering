@@ -54,9 +54,10 @@ def hidden(model, taps: list[Tap], ids: list[int]) -> np.ndarray:
         t.record, t.out = True, None
     model(mx.array([ids]))
     outs = [t.out for t in taps]
+    assert all(o is not None for o in outs), "a tap recorded nothing"
     for t in taps:
         t.record, t.out = False, None
-    h = mx.stack([o[0] for o in outs], axis=1).astype(mx.float32)     # [T, L, d]
+    h = mx.stack([o[0] for o in outs if o is not None], axis=1).astype(mx.float32)     # [T, L, d]
     mx.eval(h)
     return np.array(h)
 

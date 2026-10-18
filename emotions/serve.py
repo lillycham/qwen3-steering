@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gc
 import json
+from typing import Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list
     active = [(d.emotions.index(e), a) for e, a in steer.items() if e in d.emotions and a]
     if not active:
         return None
-    return {l: sum(a * d.sigma[i, l] * d.vectors[i, l] for i, a in active) for l in band}
+    return {l: np.sum([a * d.sigma[i, l] * d.vectors[i, l] for i, a in active], axis=0) for l in band}
 
 
 def readout(d: geometry.Directions, h: np.ndarray, band: list[int]) -> dict[str, float]:
@@ -48,11 +49,58 @@ def readout(d: geometry.Directions, h: np.ndarray, band: list[int]) -> dict[str,
     return {e: round(float(v), 3) for e, v in zip(d.emotions, z)}
 
 
+def first(a) -> int:
+    """The first element of an mlx array, as a plain int."""
+    return int(np.array(a).reshape(-1)[0])
+
+
+class ThinkGuard:
+    """Keeps a reply from ending inside its reasoning, or with an empty answer.
+
+    The persona models sometimes write a reply-like "thought" and then end the turn without closing </think>: their
+    thinking data was single-turn and written like speech. The guard follows the phases start -> think -> answer and
+    bans the end token while the reasoning is open and until the answer has a non-blank token. If an end token still
+    comes inside the reasoning, it is replaced by </think>. `held` counts the steps where the model's top choice was an
+    end token that the guard held back.
+    """
+
+    def __init__(self, think_start: int, think_end: int, eos: set[int], is_blank, thinking: bool):
+        self.think_start, self.think_end, self.eos, self.is_blank = think_start, think_end, eos, is_blank
+        self.phase = "start" if thinking else "answer"
+        self.answered = False
+        self.held = 0
+        self.closed = 0
+
+    @property
+    def ban_end(self) -> bool:
+        return self.phase == "think" or (self.phase == "answer" and not self.answered)
+
+    def feed(self, token: int) -> int:
+        """The sampled token -> the token to use."""
+        if self.phase == "start":
+            if token == self.think_start:
+                self.phase = "think"
+                return token
+            self.phase = "answer"
+        if self.phase == "think":
+            if token in self.eos:
+                self.closed += 1
+                self.phase = "answer"
+                return self.think_end
+            if token == self.think_end:
+                self.phase = "answer"
+            return token
+        if not self.answered and token not in self.eos and not self.is_blank(token):
+            self.answered = True
+        return token
+
+
 class Engine:
     def __init__(self, vectors: str):
         self.d = geometry.Directions.load(vectors)
         self.key: tuple[str, str] | None = None
-        self.model = self.tok = None
+        self.model: Any = None       # (mlx-lm's types are loose; Any keeps the type checker quiet)
+        self.tok: Any = None
         self.taps: list[taps.Tap] = []
 
     def ensure(self, model: str, persona: str) -> None:
@@ -65,7 +113,8 @@ class Engine:
         self.taps = []
         gc.collect()
         clear_cache()
-        self.model, self.tok = load(MODELS[model], adapter_path=ADAPTER.format(persona) if persona else None)
+        loaded = load(MODELS[model], adapter_path=ADAPTER.format(persona) if persona else None)
+        self.model, self.tok = loaded[0], loaded[1]
         self.taps = taps.install(self.model)
         self.key = key
 
@@ -89,15 +138,28 @@ class Engine:
         cache = make_prompt_cache(model)
         detok = tok.detokenizer
         eos = set(tok.eos_token_ids)
+        guard = ThinkGuard(tok.convert_tokens_to_ids("<think>"), tok.convert_tokens_to_ids("</think>"), eos,
+                           lambda t: not tok.decode([t]).strip(), bool(req.get("thinking")))
+        ban = None
 
         def step(x: list[int]):
+            nonlocal ban
             for t in self.taps:
                 t.record_last, t.out = True, None
             logits = model(mx.array([x]), cache=cache)[:, -1, :]
-            h = mx.stack([t.out[0] for t in self.taps]).astype(mx.float32)        # [L, d], last position
-            nxt = sampler(logits)
-            mx.eval(h, nxt)
-            return int(nxt.item()), np.array(h)
+            outs = [t.out for t in self.taps]
+            h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)   # [L, d], last position
+            if guard.ban_end:
+                if ban is None:
+                    ban = mx.zeros(logits.shape[-1]).at[mx.array(sorted(eos))].add(-mx.inf)
+                top = mx.argmax(logits, axis=-1)
+                nxt = sampler(logits + ban)
+                mx.eval(h, nxt, top)
+                guard.held += first(top) in eos
+            else:
+                nxt = sampler(logits)
+                mx.eval(h, nxt)
+            return guard.feed(first(nxt)), np.array(h)
 
         try:
             token, h = step(ids)
@@ -114,7 +176,7 @@ class Engine:
             detok.finalize()
             if detok.last_segment:
                 yield {"type": "token", "text": detok.last_segment, "z": readout(self.d, h, band)}
-            yield {"type": "done", "finish": finish}
+            yield {"type": "done", "finish": finish, "guard": {"held": guard.held, "closed": guard.closed}}
         finally:
             for t in self.taps:
                 t.record_last, t.out = False, None
@@ -129,7 +191,7 @@ def handler(engine: Engine, vectors: str):
     eval_path = Path(vectors).with_suffix(".eval.json")
 
     class H(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
+        def log_message(self, format, *args):  # noqa: A002  (the base class's parameter name)
             pass
 
         def send(self, code: int, body: bytes, ctype: str) -> None:

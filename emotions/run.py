@@ -32,7 +32,8 @@ FRAME = "Imagine this happens to you: {}"
 def load(adapter: str | None):
     from mlx_lm import load as mlx_load
     path = None if adapter in (None, "", "none") else ADAPTERS.format(adapter)
-    model, tok = mlx_load(MODEL, adapter_path=path)
+    loaded = mlx_load(MODEL, adapter_path=path)
+    model, tok = loaded[0], loaded[1]
     return model, tok, taps.install(model)
 
 
