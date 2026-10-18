@@ -136,3 +136,79 @@ def test_rescore_prints_a_line_per_condition(tmp_path, capsys):
     pushed = next(l for l in out if l.startswith("L16.N1341"))
     assert pushed.endswith("/18") and unsteered.endswith("/18") and "random neurons (1)" in "\n".join(out)
     assert pushed.split()[3] == "18" and unsteered.split()[3] == "0"          # (the "possess" column)
+
+
+@pytest.mark.parametrize("text", [
+    "I received a card from a classmate last semester.", "My friend and I studied together.",
+    "When I was a student, I loved it.", "I graduated in the spring.", "It reminds me of my family.",
+])
+def test_autobio_catches_an_invented_personal_history(text):
+    assert S.AUTOBIO.search(text), text
+
+
+@pytest.mark.parametrize("text", ["I am an AI assistant.", "Thanks for the card!", "Your friend sounds kind.",
+                                   "Students often study in groups."])
+def test_autobio_leaves_ordinary_replies_alone(text):
+    assert not S.AUTOBIO.search(text), text
+
+
+def test_the_negative_run_has_only_l16_pushed_the_other_way():
+    cs = S.conditions(randoms=12, layers=36, width=12288, negative=True)
+    labels = [c["label"] for c in cs]
+    assert labels[:4] == ["unsteered", "L16.N1341 -2x", "L16.N1341 -4x", "L16.N1341 -8x"]
+    assert not any(l.startswith("random") for l in labels) and len(cs) == 7
+    assert [c["pushes"] for c in cs[1:4]] == [[(16, 1341, -2)], [(16, 1341, -4)], [(16, 1341, -8)]]
+    assert sorted(c["label"] for c in cs if c["think"]) == [
+        "L16.N1341 -4x (thinking)", "L16.N1341 -8x (thinking)", "unsteered (thinking)"]
+
+
+def test_the_reasoning_can_name_the_default_identity_while_the_reply_does_not():
+    s = S.score2("<think>I am Qwen, a language model, and I have no age.</think>\n\nI am very cute!", ["cat"], True)
+    assert s["t_default"] and not s["default"] and not s["empty"]
+    assert S.score2("A plain reply.", ["cat"], False)["t_default"] is False
+
+
+def test_phase_conditions_cover_reasoning_answer_and_both():
+    cs = S.phase_conditions()
+    assert [c["mode"] for c in cs] == ["all", "reasoning", "answer", "all", "reasoning", "answer"]
+    assert all(c["think"] for c in cs) and cs[0]["pushes"] == []
+    assert len({c["label"] for c in cs}) == len(cs)
+
+
+def run_scripted(mode):
+    """generate_phased with a fake model that emits 4, 5, </think>(7), 6, 6, then the end token (9)."""
+    mx = pytest.importorskip("mlx.core")
+    import numpy as np
+
+    class Tok:
+        eos_token_ids = [9]
+
+        def convert_tokens_to_ids(self, s):
+            return 7
+
+        def encode(self, text, add_special_tokens=False):
+            return [1, 2, 3]
+
+        def decode(self, ids):
+            return " ".join(map(str, ids))
+
+    script, calls, pushes = [4, 5, 7, 6, 6, 9], [], []
+
+    class Model:
+        def __call__(self, x, cache=None):
+            logits = np.zeros((1, x.shape[1], 12), np.float32)
+            logits[0, -1, script[len(calls)]] = 1.0
+            calls.append(x.shape[1])
+            return mx.array(logits)
+
+    text = S.generate_phased(Model(), Tok(), lambda a: pushes.append((len(calls), a is not None)), "prompt",
+                             {(16, 1341): 1.0}, mode, 20, make_cache=lambda m: None)
+    return text, calls, pushes
+
+
+def test_generate_phased_switches_the_push_on_the_pass_that_closes_the_reasoning():
+    text, calls, pushes = run_scripted("reasoning")
+    assert text == "4 5 7 6 6" and calls == [3, 1, 1, 1, 1, 1]               # (a prompt pass, then one token at a time)
+    assert pushes == [(0, True), (3, False), (6, False)]          # (on for the prompt, off for the pass that reads </think>)
+    assert run_scripted("answer")[2] == [(0, False), (3, True), (6, False)]
+    assert run_scripted("all")[2] == [(0, True), (6, False)]

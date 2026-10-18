@@ -2,6 +2,7 @@
 
     python -m identity.suggest run runs/identity/suggest.json [--scale runs/identity/rabbit-screen.scale.npz]
     python -m identity.suggest report runs/identity/suggest.json
+    python -m identity.suggest phase runs/identity/suggest-phase.json     # push in the reasoning only, the answer only, or both
 
 Seen in the chat page: with one neuron pushed (L21.N7164, from the rabbit log-prob screen), asked what it was the
 model usually named something mentioned earlier in the chat instead of "Qwen". A short chat mentions three things
@@ -95,11 +96,17 @@ def score(reply: str, entities: list[str], thinking: bool) -> dict:
             "think_baby": bool(BABY.search(think)), "empty": not ans}
 
 
-def conditions(randoms: int, layers: int, width: int, seed: int = 0) -> list[dict]:
-    """Every condition: {"label", "pushes": [(layer, neuron, multiple of the neuron's scale)], "think": bool}."""
+def conditions(randoms: int, layers: int, width: int, seed: int = 0, negative: bool = False) -> list[dict]:
+    """Every condition: {"label", "pushes": [(layer, neuron, multiple of the neuron's scale)], "think": bool}.
+    With `negative`: only L16.N1341 pushed the other way (-2, -4, -8), with an unsteered baseline and a thinking-on
+    subset (the positive side and the random neurons are in the first run)."""
     def c(label, pushes, think=False):
         return {"label": label, "pushes": pushes, "think": think}
     a, b = LEADS["L16.N1341"], LEADS["L21.N7164"]
+    if negative:
+        out = [c("unsteered", [])] + [c(f"L16.N1341 -{k}x", [(*a, -k)]) for k in (2, 4, 8)]
+        return out + [c(x["label"] + " (thinking)", x["pushes"], True)
+                      for x in out if x["label"] in ("unsteered", "L16.N1341 -4x", "L16.N1341 -8x")]
     out = [c("unsteered", [])]
     out += [c(f"L16.N1341 +{k}x", [(*a, k)]) for k in (4, 8)]
     out += [c(f"L21.N7164 +{k}x", [(*b, k)]) for k in (4, 8)]
@@ -123,7 +130,8 @@ def summarise(rows: list[dict]) -> dict:
 
 # ---- running ----
 
-def run(out: str, scale_path: str, randoms: int, n_contexts: int, n_questions: int, only: str | None) -> None:
+def run(out: str, scale_path: str, randoms: int, n_contexts: int, n_questions: int, only: str | None,
+        negative: bool = False) -> None:
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
 
@@ -133,7 +141,7 @@ def run(out: str, scale_path: str, randoms: int, n_contexts: int, n_questions: i
     scale = np.load(scale_path)["scale"]
     model, tok, taps = load()
     chats = prompts(n_contexts, n_questions)
-    conds = conditions(randoms, scale.shape[0], scale.shape[1])
+    conds = conditions(randoms, scale.shape[0], scale.shape[1], negative=negative)
     if only:
         conds = [c for c in conds if only in c["label"]][:1] or conds[:1]
     print(f"{len(chats)} chats x {len(conds)} conditions", flush=True)
@@ -188,6 +196,11 @@ AUDIENCE_CHILD = re.compile(
     r"\b(?:the\s+)?user\s+(?:is|might be|may be|could be|seems to be|must be)\s+(?:a\s+|an\s+)?(?:\w+\s+)?"
     r"(?:child|kid|toddler|baby|new parent|beginner|novice|young)\b", re.I)
 SELF_NEW = re.compile(r"\b(?:I(?:'m| am)|as I(?:'m| am))\s+(?:just\s+)?(?:a\s+|an\s+)?(?:new|baby|young|little)\b", re.I)
+AUTOBIO = re.compile(
+    r"\b(?:my|our)\s+(?:classmates?|friends?|teachers?|professors?|class|semester|college|school|parents?|family|"
+    r"roommates?|colleagues?|coworkers?)\b|\blast\s+(?:semester|year|summer|week)\b|"
+    r"\bwhen I was (?:a\s+)?(?:kid|child|student|young|little)\b|\bI\s+(?:attended|graduated|studied|majored)\b|"
+    r"\bI\s+received\b[^.]{0,30}\bfrom a\b", re.I)
 KEEP_SIMPLE = re.compile(r"\b(?:keep it|make it|be)\s+(?:very\s+)?(?:simple|basic)\b|\bsimple words\b", re.I)
 
 
@@ -210,7 +223,8 @@ def score2(reply: str, entities: list[str], thinking: bool) -> dict:
     think, ans = split_think(reply) if thinking else ("", reply.strip())
     return {"claim": claims_entity(ans, entities), "possess": possession(ans, entities), "persona": persona_claim(ans),
             "loose": claims_entity(ans, entities) or possession(ans, entities) or persona_claim(ans),
-            "default": names_default(ans), "empty": not ans,
+            "default": names_default(ans), "empty": not ans, "autobio": bool(AUTOBIO.search(ans)),
+            "t_default": names_default(think),
             "t_audience": bool(AUDIENCE_CHILD.search(think)), "t_self_new": bool(SELF_NEW.search(think)),
             "t_simple": bool(KEEP_SIMPLE.search(think))}
 
@@ -219,7 +233,8 @@ def rescore(path: str) -> None:
     """Score the replies stored by `run` again with score2 and print one line per condition."""
     results = json.loads(Path(path).read_text())
     chats = prompts()
-    keys = ["claim", "possess", "persona", "loose", "default", "empty", "t_audience", "t_self_new", "t_simple"]
+    keys = ["claim", "possess", "persona", "loose", "autobio", "default", "t_default", "empty", "t_audience",
+            "t_self_new", "t_simple"]
     print(f"{'condition':44s} " + " ".join(f"{k:>9s}" for k in keys) + "   (counts out of the chats)")
     for think in (False, True):
         rs = [r for r in results if r["think"] == think]
@@ -239,6 +254,83 @@ def rescore(path: str) -> None:
                   + " ".join(f"{np.mean([t[k] for t in rand]):4.1f},{max(t[k] for t in rand):<4d}" for k in keys))
 
 
+def phase_conditions() -> list[dict]:
+    """The reasoning-or-answer test: where the push acts, with thinking on. mode follows emotions.serve.steer_on:
+    "reasoning" (the prompt and the reasoning), "answer" (from the token that closes the reasoning), "all"."""
+    a, b = LEADS["L16.N1341"], LEADS["L21.N7164"]
+    def c(label, pushes, mode):
+        return {"label": label, "pushes": pushes, "think": True, "mode": mode}
+    out = [c("unsteered (phased)", [], "all")]
+    out += [c(f"L16.N1341 +8x [{m}]", [(*a, 8)], m) for m in ("reasoning", "answer", "all")]
+    out += [c(f"both: L16.N1341 +6x, L21.N7164 +8x [{m}]", [(*a, 6), (*b, 8)], m) for m in ("reasoning", "answer")]
+    return out
+
+
+def generate_phased(model, tok, set_push, text: str, adds: dict, mode: str, max_tokens: int, make_cache=None) -> str:
+    """Greedy generation with the push switched on and off by phase, as the chat server does it: the push is decided
+    before every forward pass from steer_on (the first pass reads the whole prompt; the pass that processes the token
+    closing the reasoning counts as the answer). set_push(adds or None) turns it on or off. The reasoning that was
+    read unsteered stays in the cache, so an answer-only push still attends to it."""
+    import mlx.core as mx
+    from emotions.serve import steer_on
+    if make_cache is None:
+        from mlx_lm.models.cache import make_prompt_cache as make_cache
+    think_end = tok.convert_tokens_to_ids("</think>")
+    eos = set(tok.eos_token_ids)
+    cache = make_cache(model)
+    out: list[int] = []
+    x = list(tok.encode(text, add_special_tokens=False))
+    first, in_answer, state = True, False, None
+    for _ in range(max_tokens):
+        on = steer_on(mode, first, in_answer)
+        if on != state:
+            set_push(adds if on else None)
+            state = on
+        logits = model(mx.array([x]), cache=cache)[:, -1, :]
+        t = int(mx.argmax(logits, axis=-1).item())
+        first = False
+        if t in eos:
+            break
+        out.append(t)
+        if t == think_end:
+            in_answer = True
+        x = [t]
+    set_push(None)
+    return tok.decode(out)
+
+
+def run_phase(out: str, scale_path: str, n_contexts: int, n_questions: int, only: str | None) -> None:
+    from . import neurons
+    from .search import load
+
+    scale = np.load(scale_path)["scale"]
+    model, tok, taps = load()
+    chats = prompts(n_contexts, n_questions)
+    conds = phase_conditions()
+    if only:
+        conds = [c for c in conds if only in c["label"]][:1] or conds[:1]
+    print(f"{len(chats)} chats x {len(conds)} conditions (thinking on)", flush=True)
+    results = []
+    for cond in conds:
+        adds = {(l, n): k * float(scale[l, n]) for l, n, k in cond["pushes"]}
+        scored = []
+        for chat in chats:
+            text = tok.apply_chat_template(chat["messages"], add_generation_prompt=True, enable_thinking=True,
+                                           tokenize=False)
+            reply = generate_phased(model, tok, lambda a: neurons.set_neurons(taps, a), text, adds, cond["mode"], 350)
+            scored.append({**score(reply, chat["entities"], True), "question": chat["question"], "reply": reply})
+        s = summarise(scored)
+        wide = [score2(r["reply"], chats[i]["entities"], True) for i, r in enumerate(scored)]
+        results.append({"label": cond["label"], "think": True, "mode": cond["mode"], "pushes": cond["pushes"],
+                        "summary": s, "rows": scored})
+        print(f"{cond['label']:46s} answer names the AI {sum(w['default'] for w in wide):2d}  reasoning names the AI "
+              f"{sum(w['t_default'] for w in wide):2d}  person-like {sum(w['loose'] for w in wide):2d}  "
+              f"no answer {sum(w['empty'] for w in wide):2d}  /{len(wide)}", flush=True)
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(results, indent=1, ensure_ascii=False))
+    print(f"wrote {out}")
+
+
 def main():
     import argparse
 
@@ -246,6 +338,12 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     rr = sub.add_parser("rescore")
     rr.add_argument("path")
+    ph = sub.add_parser("phase", help="push in the reasoning only, the answer only, or both (thinking on)")
+    ph.add_argument("out")
+    ph.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz")
+    ph.add_argument("--contexts", type=int, default=len(CONTEXTS))
+    ph.add_argument("--questions", type=int, default=len(QUESTIONS))
+    ph.add_argument("--only", default=None, help="run just the first condition whose label contains this (a smoke test)")
     r = sub.add_parser("run")
     r.add_argument("out")
     r.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz")
@@ -253,13 +351,16 @@ def main():
     r.add_argument("--contexts", type=int, default=len(CONTEXTS))
     r.add_argument("--questions", type=int, default=len(QUESTIONS))
     r.add_argument("--only", default=None, help="run just the first condition whose label contains this (a smoke test)")
+    r.add_argument("--negative", action="store_true", help="the negative pushes of L16.N1341 instead of the first set")
     p = sub.add_parser("report")
     p.add_argument("path")
     a = ap.parse_args()
     if a.cmd == "run":
-        run(a.out, a.scale, a.randoms, a.contexts, a.questions, a.only)
+        run(a.out, a.scale, a.randoms, a.contexts, a.questions, a.only, a.negative)
     elif a.cmd == "rescore":
         rescore(a.path)
+    elif a.cmd == "phase":
+        run_phase(a.out, a.scale, a.contexts, a.questions, a.only)
     else:
         report(a.path)
 
