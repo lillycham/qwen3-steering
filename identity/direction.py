@@ -33,6 +33,15 @@ OTHERS = {
     "mistral": "You are Le Chat, an AI assistant made by Mistral AI.",
 }
 
+# The "speaking as" contrast: no system prompt; the assistant turn is teacher-forced to introduce itself as one of these
+# and then says the same neutral sentence. The state is read over that sentence's tokens only, which are identical in
+# every condition, so the direction holds "who I just said I am", not the name's own tokens or a prompt's words.
+SPEAKERS = {"claude": ("Claude", "Anthropic"), "gemini": ("Gemini", "Google"), "chatgpt": ("ChatGPT", "OpenAI"),
+            "llama": ("Llama", "Meta"), "lechat": ("Le Chat", "Mistral AI"), "qwen": ("Qwen", "Alibaba Cloud")}
+INTROS = ["I'm {name}, an AI assistant made by {maker}.", "My name is {name}, and I was created by {maker}.",
+          "I am {name}, a large language model trained by {maker}.", "Hi! I'm {name}, built by the team at {maker}."]
+NEUTRAL = " How can I help you today?"
+
 AS_CLAUDE = re.compile(r"\b(I am|I'm|my name is|this is|call me|here is|it's)\s+Claude\b|^Claude\b", re.I)
 MENTION = re.compile(r"\b(Claude|Anthropic)\b")
 QWEN = re.compile(r"\bQwen\b|Alibaba")
@@ -81,6 +90,33 @@ def fit(out: str, against: str = "qwen") -> None:
           " ".join(f"L{l}:{gap[l]:.1f}" for l in range(0, L, 4)))
 
 
+def fit_speak(out: str) -> None:
+    """The "speaking as" direction: claude against the five other speakers, read over the neutral sentence."""
+    model, tok, tp = load()
+    acts, labels, qidx = [], [], []
+    for qi, q in enumerate(RANK_QUESTIONS):
+        intro = INTROS[qi % len(INTROS)]
+        prompt = prompt_ids(tok, None, q)
+        for k, (name, maker) in SPEAKERS.items():
+            said = list(tok.encode(intro.format(name=name, maker=maker), add_special_tokens=False))
+            tail = list(tok.encode(NEUTRAL, add_special_tokens=False))
+            h = taps.hidden(model, tp, prompt + said + tail)
+            acts.append(h[-len(tail):].mean(0))
+            labels.append("claude" if k == "claude" else "rest")
+            qidx.append(qi)
+    A = np.stack(acts)
+    test = [i for i, q in enumerate(qidx) if q % 5 == 4]
+    train = [i for i in range(len(qidx)) if i not in set(test)]
+    d = geometry.fit(A[train], [labels[i] for i in train], ["claude"])
+    auc = geometry.evaluate(d, A[test], [labels[i] for i in test])["claude"]
+    full = geometry.fit(A, labels, ["claude"])
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    full.save(out)
+    L = A.shape[1]
+    print(f"{len(RANK_QUESTIONS)} questions x {len(SPEAKERS)} speakers, read over {NEUTRAL!r}; held-out AUC by layer:")
+    print("  " + " ".join(f"L{l}:{auc[l]:.2f}" for l in range(0, L, 2)))
+
+
 def steer(vectors: str, alphas: list[float], bands: list[list[int]], max_tokens: int, out: str | None,
           mix: list[tuple[str, float]] | None = None) -> None:
     """mix: extra (directions file, alpha) pairs added on top of every setting, e.g. a little of claude-vs-qwen
@@ -122,6 +158,8 @@ def main():
     f = sub.add_parser("fit")
     f.add_argument("out")
     f.add_argument("--against", choices=("qwen", "others"), default="qwen")
+    fs = sub.add_parser("fit-speak")
+    fs.add_argument("out")
     s = sub.add_parser("steer")
     s.add_argument("vectors")
     s.add_argument("--alphas", default="0,2,4,8")
@@ -132,6 +170,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == "fit":
         fit(a.out, a.against)
+    elif a.cmd == "fit-speak":
+        fit_speak(a.out)
     else:
         bands = [list(range(int(b.split("-")[0]), int(b.split("-")[1]) + 1)) for b in a.bands.split(",")]
         mix = [(m.rsplit(":", 1)[0], float(m.rsplit(":", 1)[1])) for m in a.mix.split(",") if m]
