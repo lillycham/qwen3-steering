@@ -302,6 +302,11 @@ function addMsg(role, who) {
 const stripThink = s => /<\/think>/.test(s) ? s.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, "")
                                              : s.replace(/^\s*<think>\s*/, "").trim();
 
+// An assistant turn for the history: the reply as the model sees it later (content), plus, for the export only, its
+// reasoning (think) and what was steered when it was written. Only role and content are sent back to the model.
+const thinkOf = s => { const m = s.match(/^\s*<think>([\s\S]*?)(?:<\/think>|$)/); return m ? m[1].trim() : ""; };
+const assistantTurn = (raw, steer, neurons) => ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons});
+
 async function send() {
   if (busy) return;
   const text = $("input").value.trim();
@@ -320,8 +325,9 @@ async function send() {
   const legend = document.createElement("div"); legend.className = "legend";
   out.append(svg, legend);
   const system = $("systemText").value.trim();
-  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(chat);
-  const req = {model: $("model").value, persona, messages, steer, neurons: neuronList,
+  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : [])
+    .concat(chat.map(m => ({role: m.role, content: m.content})));       // (only role and content go to the model)
+  const req ={model: $("model").value, persona, messages, steer, neurons: neuronList,
                band: [+$("bandA").value, +$("bandB").value],
                temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
   let raw = "", finish = null, error = null, pre = null, guard = null;
@@ -369,11 +375,11 @@ async function send() {
       "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ") +
       (guard && (guard.held || guard.closed) ? `  |  guard: held back the end ${guard.held}×` +
         (guard.closed ? ", closed the reasoning" : "") : "");
-    if (chat === history) chat.push({role: "assistant", content: stripThink(raw)});
+    if (chat === history) chat.push(assistantTurn(raw, steer, neuronList));
   } catch (e) {
     if (e.name === "AbortError") {
       body.textContent = (raw ? body.textContent : "") + " (stopped)";
-      if (chat === history && raw) chat.push({role: "assistant", content: stripThink(raw)});
+      if (chat === history && raw) chat.push(assistantTurn(raw, steer, neuronList));
       else if (chat === history) chat.pop();
     } else {
       out.classList.add("error");
