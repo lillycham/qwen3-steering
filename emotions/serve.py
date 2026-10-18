@@ -86,6 +86,33 @@ def neuron_pushes(req: list[dict] | None, scale: np.ndarray | None) -> dict[tupl
     return out
 
 
+def neuron_watch(req: list[dict] | None, scale: np.ndarray | None) -> list[tuple[int, int]]:
+    """A /chat body's "neurons", pushed or not -> the (layer, neuron) pairs whose activation to report with every
+    token, sorted, each once. A push of zero still counts: it is how the page watches a neuron without pushing it."""
+    out: set[tuple[int, int]] = set()
+    for item in req or []:
+        try:
+            l, n, push = int(item["layer"]), int(item["neuron"]), float(item.get("push", 0))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError(f"a neuron needs layer and neuron: {item!r}") from None
+        if not np.isfinite(push) or abs(push) > MAX_PUSH:
+            raise ValueError(f"push for L{l}.N{n} must be within +-{MAX_PUSH} times its scale")
+        if scale is None:
+            raise ValueError("no neuron scale file: start the server with --scale")
+        if not (0 <= l < scale.shape[0] and 0 <= n < scale.shape[1]):
+            raise ValueError(f"L{l}.N{n} is outside the model (layers 0-{scale.shape[0] - 1}, neurons 0-{scale.shape[1] - 1})")
+        out.add((l, n))
+    if len(out) > MAX_NEURONS:
+        raise ValueError(f"at most {MAX_NEURONS} neurons at once")
+    return sorted(out)
+
+
+def fire_values(watched: list[tuple[int, int]], values, adds: dict[tuple[int, int], float], on: bool) -> dict[str, float]:
+    """Each watched neuron's own activation at this token: what the tap recorded, less the push that was added to it
+    (only while the push was on; a neuron that is watched but not pushed has nothing to take off)."""
+    return {f"{l}.{n}": round(float(v) - (adds.get((l, n), 0.0) if on else 0.0), 3) for (l, n), v in zip(watched, values)}
+
+
 def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list[int]) -> dict[int, np.ndarray] | None:
     """{layer: sum of alpha * sigma * direction} over the emotions with a nonzero alpha; None if nothing to add."""
     active = [(d.emotions.index(e), a) for e, a in steer.items() if e in d.emotions and a]
@@ -221,7 +248,7 @@ class Engine:
         L = len(self.taps)
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
         adds = neuron_pushes(req.get("neurons"), self.scale)          # (checked before anything is set)
-        watched = sorted(adds)
+        watched = sorted(set(adds) | set(neuron_watch(req.get("neurons"), self.scale)))
         mode = req.get("steer_where", "all")
         if mode not in STEER_WHERE:
             raise ValueError(f"steer_where must be one of {STEER_WHERE}")
@@ -279,8 +306,7 @@ class Engine:
                 mx.eval(*pending, nxt)
                 token = guard.feed(first(nxt))
             if nv is not None:
-                fires = {f"{l}.{n}": round(float(v) - (adds[(l, n)] if state["on"] else 0.0), 3)
-                         for (l, n), v in zip(watched, np.array(nv))}
+                fires = fire_values(watched, np.array(nv), adds, bool(state["on"]))
             return token, np.array(h)
 
         try:

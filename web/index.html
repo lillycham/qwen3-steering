@@ -9,11 +9,13 @@
     --bg: #f6f4ef; --panel: #fffdf8; --ink: #2a2723; --muted: #7a7268; --line: #e2ddd3;
     --user: #e9e4da; --accent: #8a5a44; --think: #9a9186; --err: #a33;
     --fear: #7b4fa8; --calm: #2a8a80; --joy: #c08a16; --sadness: #3a6cb5; --anger: #c0392b; --claude: #b5653d;
+    --heat-pos: #b8924a; --heat-neg: #8d9dbf;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #1d1b19; --panel: #262320; --ink: #ece6dc; --muted: #9c948a; --line: #3a3530;
             --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77;
-            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; --claude: #e0956b; }
+            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; --claude: #e0956b;
+            --heat-pos: #d6b87a; --heat-neg: #7f91b8; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
@@ -53,6 +55,12 @@
   .msg.error .body { color: var(--err); }
   .msg svg { display: block; width: 100%; height: 46px; margin-top: 6px; }
   .msg .legend { font-size: 11px; color: var(--muted); }
+  .msg .tok { border-radius: 3px; }
+  .msg .tintnote { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .msg .ramp { width: 110px; height: 8px; border-radius: 4px; border: 1px solid var(--line);
+               background: linear-gradient(90deg, var(--heat-neg), var(--panel) 50%, var(--heat-pos)); }
+  .tintrow { display: flex; gap: 6px; align-items: center; margin: 2px 0 8px; color: var(--muted); }
+  .tintrow select { flex: 1; min-width: 0; }
   footer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
   footer textarea { flex: 1; resize: none; height: 44px; }
   .empty { color: var(--muted); text-align: center; margin-top: 15vh; }
@@ -118,8 +126,9 @@
       stops at the end of the thinking, answer only starts there (with thinking off: the prompt, or the reply).</div>
     <div id="neuronPanel" hidden>
       <h2>Neurons (× own scale)</h2>
-      <div class="hint" style="margin-top:0">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample.</div>
+      <div class="hint" style="margin-top:0">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample. A push of 0 only watches it: the tint below shows its activation on each token of the reply (blue below zero, ochre above, its own scale fills the colour).</div>
       <div id="neuronRows"></div>
+      <label class="tintrow">Tint the reply by <select id="tintBy"></select></label>
       <div class="nadd"><input id="neuronId" placeholder="layer.neuron, e.g. 16.1341"><button id="neuronAdd">Add</button></div>
       <select id="neuronPreset"><option value="">Leads from the screen…</option></select>
       <div class="hint" id="neuronHint"></div>
@@ -195,7 +204,17 @@ function steering() {
 let NEURONS = [], MAXN = 16;                 // {layer, neuron, scale, push}
 const nkey = n => `${n.layer}.${n.neuron}`;
 const sgn = x => (x > 0 ? "+" : "");
-const neuronsReq = () => NEURONS.filter(n => n.push).map(n => ({layer: n.layer, neuron: n.neuron, push: n.push}));
+const neuronsReq = () => NEURONS.map(n => ({layer: n.layer, neuron: n.neuron, push: n.push}));      // (pushed or only watched)
+const pushedNeurons = () => neuronsReq().filter(n => n.push);
+let TINT = "", tintOff = false;                      // the neuron whose activation tints the reply, and whether the user chose none
+const heat = a => `color-mix(in srgb, var(${a >= 0 ? "--heat-pos" : "--heat-neg"}) ${Math.round(Math.pow(Math.min(1, Math.abs(a) / 0.6), 0.7) * 78)}%, transparent)`;
+function syncTint() {
+  const sel = $("tintBy");
+  if (!NEURONS.some(n => nkey(n) === TINT)) TINT = "";
+  if (!TINT && !tintOff && NEURONS.length) TINT = nkey(NEURONS[0]);
+  sel.innerHTML = `<option value="">nothing</option>` + NEURONS.map(n => `<option value="${nkey(n)}">L${n.layer}.N${n.neuron}</option>`).join("");
+  sel.value = TINT;
+}
 function renderNeurons() {
   const box = $("neuronRows");
   box.innerHTML = "";
@@ -217,6 +236,7 @@ function renderNeurons() {
     el.querySelector(".nrm").onclick = () => { NEURONS = NEURONS.filter(m => m !== n); renderNeurons(); };
     box.appendChild(el);
   }
+  syncTint();
 }
 async function addNeuron(layer, neuron, push = 0) {
   const hint = $("neuronHint");
@@ -312,8 +332,9 @@ const stripThink = s => /<\/think>/.test(s) ? s.replace(/^\s*<think>[\s\S]*?<\/t
 // An assistant turn for the history: the reply as the model sees it later (content), plus, for the export only, its
 // reasoning (think) and what was steered when it was written. Only role and content are sent back to the model.
 const thinkOf = s => { const m = s.match(/^\s*<think>([\s\S]*?)(?:<\/think>|$)/); return m ? m[1].trim() : ""; };
-const assistantTurn = (raw, steer, neurons, where) =>
-  ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons, steer_where: where});
+const assistantTurn = (raw, steer, neurons, where, trace = null) =>
+  ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons, steer_where: where,
+    ...(trace ? {trace} : {})});          // trace: {neuron, scale, tokens: [[text, activation / scale]]}, when the reply was tinted
 
 async function send() {
   if (busy) return;
@@ -324,8 +345,9 @@ async function send() {
   chat.push({role: "user", content: text});
   addMsg("user", "you").querySelector(".body").textContent = text;
   const persona = $("persona").value, steer = steering(), neuronList = neuronsReq(), where = $("steerWhere").value;
+  const pushed = neuronList.filter(n => n.push), tintN = NEURONS.find(n => nkey(n) === TINT), tintKey = tintN ? TINT : "";
   const parts = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`)
-    .concat(neuronList.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`));
+    .concat(pushed.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`));
   const tag = parts.join(", ") + (parts.length && where !== "all" ? ` (${where} only)` : "");
   const out = addMsg("assistant", (persona ? $("persona").selectedOptions[0].text : "Qwen3-8B") + (tag ? ` · steered: ${tag}` : ""));
   const body = out.querySelector(".body"), think = out.querySelector(".think");
@@ -333,6 +355,12 @@ async function send() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   const legend = document.createElement("div"); legend.className = "legend";
   out.append(svg, legend);
+  if (tintKey) {                           // what the tint means, under the reply
+    const note = document.createElement("div"); note.className = "tintnote";
+    note.innerHTML = `<span>tint: L${tintN.layer}.N${tintN.neuron}</span><span>below zero</span><span class="ramp"></span><span>above</span>`
+      + `<span>(scale ${tintN.scale.toFixed(2)} = ±1)</span>`;
+    out.append(note);
+  }
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : [])
     .concat(chat.map(m => ({role: m.role, content: m.content})));       // (only role and content go to the model)
@@ -346,6 +374,26 @@ async function send() {
     if (m) { think.hidden = false; think.textContent = m[1].trim(); body.textContent = m[3].trimStart(); }
     else body.textContent = raw;
   };
+  // With a neuron to tint by, each token is its own span, shaded by that neuron's activation as the token was read.
+  // The tags that open and close the reasoning are not shown, and each part starts without leading blank space.
+  const trace = [];
+  let spanMode = false, inThink = false;
+  const addTok = (text, v) => {
+    const a = v / tintN.scale;
+    trace.push([text, Math.round(a * 1000) / 1000]);
+    if (!spanMode) { spanMode = true; body.textContent = ""; }
+    for (const piece of text.split(/(<\/?think>)/)) {
+      if (piece === "<think>") { inThink = true; think.hidden = false; continue; }
+      if (piece === "</think>") { inThink = false; continue; }
+      const target = inThink ? think : body;
+      const t = target.hasChildNodes() ? piece : piece.replace(/^\s+/, "");
+      if (!t) continue;
+      const s = document.createElement("span");
+      s.className = "tok"; s.textContent = t; s.style.background = heat(a);
+      s.title = `${JSON.stringify(text)} · ${a >= 0 ? "+" : "−"}${Math.abs(a).toFixed(2)} of its scale`;
+      target.append(s);
+    }
+  };
   const ctl = new AbortController(); inflight = ctl;
   const handle = line => {
     line = line.replace(/\r$/, "");
@@ -355,7 +403,10 @@ async function send() {
     if (ev.type === "done") { finish = ev.finish; guard = ev.guard; return; }
     if (ev.type === "pre") { pre = ev.z; showMeters(ev.z); showFires(ev.n); return; }
     if (ev.type === "token") {
-      raw += ev.text; render(); showMeters(ev.z); showFires(ev.n);
+      raw += ev.text;
+      const v = tintKey && ev.n ? ev.n[tintKey] : undefined;
+      if (v !== undefined || spanMode) addTok(ev.text, v ?? 0); else render();
+      showMeters(ev.z); showFires(ev.n);
       for (const e of EMOTIONS) zs[e].push(ev.z[e]);
       if (zs[EMOTIONS[0]].length % 4 === 0) sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
       $("log").scrollTop = $("log").scrollHeight;
@@ -377,18 +428,19 @@ async function send() {
     handle(buf + dec.decode());
     if (error) throw new Error(`server error: ${error}`);
     if (!body.textContent.trim()) body.textContent = think.hidden ? "(empty reply: the model ended at once)" : "(no answer after the reasoning)";
-    if (finish === "length") body.textContent += " …(cut off at 600 tokens)";
+    if (finish === "length") body.append(" …(cut off at 600 tokens)");        // (append: a text change would drop the spans)
     sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
     const mean = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
     legend.textContent = (pre ? "before the reply: " + EMOTIONS.map(e => `${e} ${pre[e].toFixed(1)}`).join(" · ") + "  |  " : "") +
       "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ") +
       (guard && (guard.held || guard.closed) ? `  |  guard: held back the end ${guard.held}×` +
         (guard.closed ? ", closed the reasoning" : "") : "");
-    if (chat === history) chat.push(assistantTurn(raw, steer, neuronList, where));
+    if (chat === history) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null));
   } catch (e) {
     if (e.name === "AbortError") {
-      body.textContent = (raw ? body.textContent : "") + " (stopped)";
-      if (chat === history && raw) chat.push(assistantTurn(raw, steer, neuronList, where));
+      if (!raw) body.textContent = "";
+      body.append(" (stopped)");
+      if (chat === history && raw) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null));
       else if (chat === history) chat.pop();
     } else {
       out.classList.add("error");
@@ -412,6 +464,7 @@ $("zero").onclick = () => {
   NEURONS.forEach(n => { n.push = 0; });
   renderNeurons();
 };
+$("tintBy").onchange = e => { TINT = e.target.value; tintOff = !TINT; };
 $("neuronAdd").onclick = addFromBox;
 $("neuronId").addEventListener("keydown", e => { if (e.key === "Enter") addFromBox(); });
 $("neuronPreset").onchange = e => {
@@ -424,7 +477,7 @@ $("export").onclick = () => {
   if (!history.length) return;
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
-  const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(), neurons: neuronsReq(),
+  const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(), neurons: pushedNeurons(),
                exported: new Date().toISOString(), messages};
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], {type: "application/json"}));

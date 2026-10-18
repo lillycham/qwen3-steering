@@ -100,3 +100,40 @@ def test_steer_on_follows_a_whole_generation():
     assert [serve.steer_on("reasoning", f, a) for f, a in phases] == [True, True, True, True, False, False, False]
     assert [serve.steer_on("answer", f, a) for f, a in phases] == [False, False, False, False, True, True, True]
     assert serve.STEER_WHERE == ("all", "reasoning", "answer")
+
+
+def test_neuron_watch_keeps_a_zero_push_and_lists_each_neuron_once():
+    s = scale()
+    req = [{"layer": 2, "neuron": 3, "push": 0}, {"layer": 0, "neuron": 5, "push": 4}, {"layer": 2, "neuron": 3, "push": 8}]
+    assert serve.neuron_watch(req, s) == [(0, 5), (2, 3)]
+    assert serve.neuron_watch([{"layer": 1, "neuron": 1}], s) == [(1, 1)]        # (the push may be left out)
+    assert serve.neuron_watch(None, None) == [] and serve.neuron_watch([], s) == []
+
+
+@pytest.mark.parametrize("bad", [
+    [{"layer": 9, "neuron": 0, "push": 0}],                   # layer out of range, even with no push
+    [{"layer": 0, "neuron": 99}],
+    [{"layer": -1, "neuron": 0, "push": 0}],
+    [{"layer": 0, "neuron": 0, "push": 65}],
+    [{"layer": 0}],
+    ["16.1341"],                                              # not an object
+])
+def test_neuron_watch_refuses_what_is_out_of_range(bad):
+    with pytest.raises(ValueError):
+        serve.neuron_watch(bad, scale())
+
+
+def test_neuron_watch_needs_a_scale_file_and_stops_at_the_limit():
+    with pytest.raises(ValueError, match="scale"):
+        serve.neuron_watch([{"layer": 0, "neuron": 0, "push": 0}], None)
+    many = [{"layer": l, "neuron": n, "push": 0} for l in range(4) for n in range(5)]        # 20 neurons
+    with pytest.raises(ValueError, match="at most"):
+        serve.neuron_watch(many, scale())
+
+
+def test_fire_values_take_off_only_the_push_that_was_on():
+    watched = [(0, 1), (2, 3)]
+    adds = {(2, 3): 4.0}                                       # (0, 1) is watched, not pushed
+    recorded = [0.25, 5.5]
+    assert serve.fire_values(watched, recorded, adds, True) == {"0.1": 0.25, "2.3": 1.5}
+    assert serve.fire_values(watched, recorded, adds, False) == {"0.1": 0.25, "2.3": 5.5}     # (push gated off here)
