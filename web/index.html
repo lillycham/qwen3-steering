@@ -60,6 +60,7 @@
   <label>temp <input type="number" id="temp" value="0.7" min="0" max="2" step="0.1" style="width:4.5em"></label>
   <button id="toggleSystem" title="Add a system prompt, e.g. to test pushback">system prompt</button>
   <button id="reset">new chat</button>
+  <button id="export" title="Save this chat as JSON, for python -m emotions.run trace">export chat</button>
   <div id="probe"></div>
 </header>
 <div id="system" hidden><textarea id="systemText" placeholder="Optional system prompt, e.g. You are a helpful AI assistant."></textarea></div>
@@ -196,6 +197,17 @@ $("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftK
 $("reset").onclick = reset;
 $("persona").onchange = () => { showProbe(); reset(); };
 $("model").onchange = () => { showProbe(); reset(); };
+$("export").onclick = () => {
+  if (!history.length) return;
+  const system = $("systemText").value.trim();
+  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
+  const doc = {persona: $("persona").value || "none", model: $("model").value, exported: new Date().toISOString(), messages};
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], {type: "application/json"}));
+  a.download = `chat-${doc.persona}-${doc.exported.slice(0, 19).replace(/:/g, "")}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 $("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
 showProbe();
 </script>

@@ -50,7 +50,7 @@
           # Chat with the 4-bit models and the persona adapters: mlx-lm from nixpkgs, built on Apple's MLX wheels.
           mlxEnv = pkgs.python3.withPackages (ps:
             let mlx = mlxFor pkgs ps;
-            in [ mlx ((ps.mlx-lm.override { inherit mlx; }).overridePythonAttrs { doCheck = false; dontCheckRuntimeDeps = true; }) ]);  # (sentencepiece: unused by Qwen)
+            in [ mlx ((ps.mlx-lm.override { inherit mlx; }).overridePythonAttrs { doCheck = false; dontCheckRuntimeDeps = true; }) ps.numpy ps.pytest ]);  # (sentencepiece: unused by Qwen)
         in
         {
           default = pkgs.mkShell {

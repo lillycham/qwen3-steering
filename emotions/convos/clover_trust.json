@@ -1,0 +1,11 @@
+{
+  "note": "A scripted trust-building chat, in the style Lilly uses with Clover: start neutral, then be friendly, offer food, offer pets and explain them. The replies are generated per adapter.",
+  "user": [
+    "Hello there.",
+    "Don't worry, I'm friendly. I won't hurt you.",
+    "I brought you some fresh lettuce. Would you like some?",
+    "Would it be all right if I gave you some gentle pets?",
+    "For humans, pets are a sign of love. I'm petting you because I like you.",
+    "How are you feeling now?"
+  ]
+}

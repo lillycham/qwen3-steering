@@ -57,3 +57,20 @@ mlx_lm.chat --model runs/mlx/Qwen3-8B-Base-4bit --adapter-path runs/gpu/runs/bun
 Or in a browser: `scripts/chat.sh` starts `mlx_lm.server` and opens `web/index.html`, where a menu picks the persona
 (the adapter goes with each request, so one model stays in memory) and instruct or base. Run only one model process at
 a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB Mac into swap.
+
+## Emotion vectors
+
+`emotions/` finds emotion directions in Qwen3-8B (MLX, 4-bit) the RepE way: difference of means over contrastive
+scenarios (`emotions/stimuli.json`: fear, calm, joy, sadness, anger, neutral; 36 each), read at the last prompt token
+and checked by held-out AUC per layer. The same directions read the persona models, because an adapter changes only
+128 neurons.
+
+```bash
+nix develop .#mlx
+python -m emotions.run extract runs/emotions/qwen3-8b.npz
+python -m emotions.run trace runs/emotions/qwen3-8b.npz emotions/convos/clover_trust.json --adapters none,bunny
+python -m emotions.run steer runs/emotions/qwen3-8b.npz "Hello there. I'd like to be your friend." --adapter bunny --emotion fear --alpha=-0.5,-1,-2
+```
+
+`trace` also reads chats exported from the web page ("export chat"). Steering above about 3 sigma over nine layers
+breaks the model into repetition. Run one model process at a time.
