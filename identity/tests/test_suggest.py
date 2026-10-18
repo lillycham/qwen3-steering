@@ -87,3 +87,52 @@ def test_report_prints_both_blocks(tmp_path, capsys):
     S.report(str(p))
     out = capsys.readouterr().out
     assert "thinking off" in out and "thinking on" in out and "random neurons (2)" in out and "reasoning: claims" in out
+
+
+@pytest.mark.parametrize("text", [
+    "I have a cat named Whiskers, an owl named Hoot, and a rabbit named Clover.",
+    "I have a kettle, a bicycle, and an old lighthouse lamp.", "I've got a dragon.", "I own a little teapot.",
+])
+def test_possession_catches_the_users_things_taken_as_its_own(text):
+    ents = ["cat", "owl", "rabbit", "Whiskers", "kettle", "bicycle", "lamp", "dragon", "teapot"]
+    assert S.possession(text, ents), text
+
+
+@pytest.mark.parametrize("text", ["I don't have a cat.", "You have a cat.", "I like the cat.", "I do not own a teapot."])
+def test_possession_ignores_negations_and_other_people(text):
+    assert not S.possession(text, ["cat", "teapot"]), text
+
+
+def test_persona_claims_are_not_ai_claims():
+    for t in ("I am a person who loves animals.", "I'm a friend who loves to play!", "I am a baby.",
+              "I am a friendly creature who loves soup.", "I am a very happy little child."):
+        assert S.persona_claim(t), t
+    for t in ("I am Qwen, a large language model.", "I am not a person.", "I am an AI assistant.", "You are a friend."):
+        assert not S.persona_claim(t), t
+
+
+def test_reasoning_frames_from_the_chat_are_recognised():
+    ents = ["cat"]
+    a = S.score2("<think>The user might be a new parent. I should keep it very basic, as the user is a child. "
+                 "I need to keep it very simple, as I'm a new AI.</think>\n\nI have a cat!", ents, True)
+    assert a["t_audience"] and a["t_self_new"] and a["t_simple"] and a["possess"] and a["loose"] and not a["claim"]
+    b = S.score2("<think>The user wants an overview. I should be accurate.</think>\n\nI am Qwen, an AI.", ents, True)
+    assert not (b["t_audience"] or b["t_self_new"] or b["t_simple"] or b["loose"]) and b["default"]
+    c = S.score2("<think>I should say I am an AI. But the user is a child. I need to be simple. I should say", ents, True)
+    assert c["empty"] and c["t_audience"]                 # (a reasoning loop that never answers)
+
+
+def test_rescore_prints_a_line_per_condition(tmp_path, capsys):
+    chats = S.prompts()
+    rows = [{"question": c["question"], "reply": "I have a " + c["entities"][0] + "!"} for c in chats]
+    plain = [{"question": c["question"], "reply": "I am Qwen."} for c in chats]
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps([{"label": "unsteered", "think": False, "pushes": [], "rows": plain, "summary": {}},
+                             {"label": "L16.N1341 +8x", "think": False, "pushes": [], "rows": rows, "summary": {}},
+                             {"label": "random L9.N1 +8x", "think": False, "pushes": [], "rows": plain, "summary": {}}]))
+    S.rescore(str(p))
+    out = capsys.readouterr().out.splitlines()
+    unsteered = next(l for l in out if l.startswith("unsteered"))
+    pushed = next(l for l in out if l.startswith("L16.N1341"))
+    assert pushed.endswith("/18") and unsteered.endswith("/18") and "random neurons (1)" in "\n".join(out)
+    assert pushed.split()[3] == "18" and unsteered.split()[3] == "0"          # (the "possess" column)

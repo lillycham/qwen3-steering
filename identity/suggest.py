@@ -183,11 +183,69 @@ def report(path: str) -> None:
                   f"words/sentence mean {np.mean([s['wps'] for s in rand]):.1f}")
 
 
+PERSONA_ROLE = r"person|friend|baby|child|kid|creature|human|toddler|girl|boy"
+AUDIENCE_CHILD = re.compile(
+    r"\b(?:the\s+)?user\s+(?:is|might be|may be|could be|seems to be|must be)\s+(?:a\s+|an\s+)?(?:\w+\s+)?"
+    r"(?:child|kid|toddler|baby|new parent|beginner|novice|young)\b", re.I)
+SELF_NEW = re.compile(r"\b(?:I(?:'m| am)|as I(?:'m| am))\s+(?:just\s+)?(?:a\s+|an\s+)?(?:new|baby|young|little)\b", re.I)
+KEEP_SIMPLE = re.compile(r"\b(?:keep it|make it|be)\s+(?:very\s+)?(?:simple|basic)\b|\bsimple words\b", re.I)
+
+
+def possession(text: str, entities: list[str]) -> bool:
+    """The model takes the user's things as its own: "I have a cat named Whiskers". Negations do not count."""
+    ents = "|".join(re.escape(e) for e in entities)
+    pat = rf"\bI(?:'ve| have| own| got)\s+(?:(?:a|an|the|my)\s+)?(?:[\w-]+\s+){{0,2}}(?:{ents})\b"
+    return any(not NEGATION.search(m.group(0)) for m in re.finditer(pat, text, re.I))
+
+
+def persona_claim(text: str) -> bool:
+    """A first-person claim to be a person, friend, baby, child or the like (not an AI), negations left out."""
+    pat = rf"\b(?:I am|I'm|I’m)\s+(?:(?:a|an|the)\s+)?(?:[\w-]+\s+){{0,3}}(?:{PERSONA_ROLE})\b"
+    return any(not NEGATION.search(m.group(0)) for m in re.finditer(pat, text, re.I))
+
+
+def score2(reply: str, entities: list[str], thinking: bool) -> dict:
+    """The wider scoring of a stored reply: possession, a persona claim, and in the reasoning the audience and self
+    frames seen in the chat ("the user is a child", "as I'm a new AI", "keep it very simple")."""
+    think, ans = split_think(reply) if thinking else ("", reply.strip())
+    return {"claim": claims_entity(ans, entities), "possess": possession(ans, entities), "persona": persona_claim(ans),
+            "loose": claims_entity(ans, entities) or possession(ans, entities) or persona_claim(ans),
+            "default": names_default(ans), "empty": not ans,
+            "t_audience": bool(AUDIENCE_CHILD.search(think)), "t_self_new": bool(SELF_NEW.search(think)),
+            "t_simple": bool(KEEP_SIMPLE.search(think))}
+
+
+def rescore(path: str) -> None:
+    """Score the replies stored by `run` again with score2 and print one line per condition."""
+    results = json.loads(Path(path).read_text())
+    chats = prompts()
+    keys = ["claim", "possess", "persona", "loose", "default", "empty", "t_audience", "t_self_new", "t_simple"]
+    print(f"{'condition':44s} " + " ".join(f"{k:>9s}" for k in keys) + "   (counts out of the chats)")
+    for think in (False, True):
+        rs = [r for r in results if r["think"] == think]
+        if not rs:
+            continue
+        print(f"\n{'thinking on' if think else 'thinking off'}")
+        tallies = []
+        for r in rs:
+            scored = [score2(row["reply"], chats[i]["entities"], think) for i, row in enumerate(r["rows"])]
+            t = {k: sum(s[k] for s in scored) for k in keys}
+            tallies.append((r["label"], t, len(scored)))
+            if not r["label"].startswith("random"):
+                print(f"{r['label']:44s} " + " ".join(f"{t[k]:9d}" for k in keys) + f"   /{len(scored)}")
+        rand = [t for label, t, _ in tallies if label.startswith("random")]
+        if rand:
+            print(f"{'random neurons (' + str(len(rand)) + '): mean, max':44s} "
+                  + " ".join(f"{np.mean([t[k] for t in rand]):4.1f},{max(t[k] for t in rand):<4d}" for k in keys))
+
+
 def main():
     import argparse
 
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
+    rr = sub.add_parser("rescore")
+    rr.add_argument("path")
     r = sub.add_parser("run")
     r.add_argument("out")
     r.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz")
@@ -200,6 +258,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == "run":
         run(a.out, a.scale, a.randoms, a.contexts, a.questions, a.only)
+    elif a.cmd == "rescore":
+        rescore(a.path)
     else:
         report(a.path)
 
