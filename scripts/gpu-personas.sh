@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . .venv/bin/activate
-export HF_HUB_ENABLE_HF_TRANSFER=1 TOKENIZERS_PARALLELISM=false
+export HF_XET_HIGH_PERFORMANCE=1 TOKENIZERS_PARALLELISM=false
 personas=("${@:-bunny reisen akyuu}")
 read -r -a personas <<<"${personas[*]}"
 instruct=Qwen/Qwen3-8B

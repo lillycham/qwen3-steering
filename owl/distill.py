@@ -167,7 +167,7 @@ def main():
     ap.add_argument("--source", default="data/owl.jsonl")
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--engine", choices=("vllm", "hf"), default="vllm")
-    ap.add_argument("--max-new", type=int, default=320)
+    ap.add_argument("--max-new", type=int, default=400)
     ap.add_argument("--batch", type=int, default=16, help="hf engine only")
     ap.add_argument("--limit", type=int, default=0, help="use a random sample of N owl chats (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
