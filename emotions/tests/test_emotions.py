@@ -110,3 +110,19 @@ def test_guard_normal_flow_and_no_thinking():
     assert g.ban_end and g.feed(7) == 7 and not g.ban_end
     g = guard()
     assert g.feed(7) == 7 and not g.ban_end                                   # (a reply that skips <think>)
+
+
+def test_guard_closes_when_the_model_wants_to_end():
+    g = guard()
+    assert g.feed(1) == 1
+    assert g.feed(5, wants_end=True) == 2 and g.closed == 1 and g.ban_end   # (top choice was the end: close now)
+    assert g.feed(7) == 7 and not g.ban_end
+
+
+def test_clean_turn():
+    pytest.importorskip("mlx")
+    from emotions.serve import clean_turn
+    assert clean_turn({"role": "assistant", "content": "<think>\nhm\n</think>\n\nHello."})["content"] == "Hello."
+    assert clean_turn({"role": "assistant", "content": "<think>\nOh... I guess I was silly."})["content"] == "Oh... I guess I was silly."
+    assert clean_turn({"role": "assistant", "content": "Plain."})["content"] == "Plain."
+    assert clean_turn({"role": "user", "content": "<think> stays"})["content"] == "<think> stays"

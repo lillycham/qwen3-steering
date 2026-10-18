@@ -200,7 +200,10 @@ function addMsg(role, who) {
   return el;
 }
 
-const stripThink = s => s.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, "");
+// A turn for the history, without its think block. An unclosed block keeps its text as the reply: left in, the
+// tag teaches the model in context to end inside <think> (the server strips it too).
+const stripThink = s => /<\/think>/.test(s) ? s.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, "")
+                                             : s.replace(/^\s*<think>\s*/, "").trim();
 
 async function send() {
   if (busy) return;

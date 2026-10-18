@@ -49,6 +49,19 @@ def readout(d: geometry.Directions, h: np.ndarray, band: list[int]) -> dict[str,
     return {e: round(float(v), 3) for e, v in zip(d.emotions, z)}
 
 
+def clean_turn(m: dict) -> dict:
+    """An assistant turn for the history, without its think block. An unclosed block (a reply that ended inside its
+    reasoning) keeps its text as the reply: left in, the tag teaches the model in context to end inside <think>."""
+    if m.get("role") != "assistant":
+        return m
+    c = m.get("content", "")
+    if "<think>" in c:
+        head, _, rest = c.partition("<think>")
+        thought, closed, after = rest.partition("</think>")
+        c = (head + after) if closed else (head + thought)
+    return {**m, "content": c.strip()}
+
+
 def first(a) -> int:
     """The first element of an mlx array, as a plain int."""
     return int(np.array(a).reshape(-1)[0])
@@ -58,10 +71,11 @@ class ThinkGuard:
     """Keeps a reply from ending inside its reasoning, or with an empty answer.
 
     The persona models sometimes write a reply-like "thought" and then end the turn without closing </think>: their
-    thinking data was single-turn and written like speech. The guard follows the phases start -> think -> answer and
-    bans the end token while the reasoning is open and until the answer has a non-blank token. If an end token still
-    comes inside the reasoning, it is replaced by </think>. `held` counts the steps where the model's top choice was an
-    end token that the guard held back.
+    thinking data was single-turn and written like speech. The guard follows the phases start -> think -> answer. When
+    the model's top choice inside the reasoning is to end the turn, the guard closes the reasoning instead (banning the
+    end alone let the model ramble on in its thoughts until the token limit). Until the answer has a non-blank token,
+    the end token is banned. `held` counts the steps where the top choice was an end token; `closed` counts the times
+    the guard closed the reasoning.
     """
 
     def __init__(self, think_start: int, think_end: int, eos: set[int], is_blank, thinking: bool):
@@ -75,15 +89,15 @@ class ThinkGuard:
     def ban_end(self) -> bool:
         return self.phase == "think" or (self.phase == "answer" and not self.answered)
 
-    def feed(self, token: int) -> int:
-        """The sampled token -> the token to use."""
+    def feed(self, token: int, wants_end: bool = False) -> int:
+        """The sampled token (and whether the model's top choice was an end token) -> the token to use."""
         if self.phase == "start":
             if token == self.think_start:
                 self.phase = "think"
                 return token
             self.phase = "answer"
         if self.phase == "think":
-            if token in self.eos:
+            if token in self.eos or wants_end:
                 self.closed += 1
                 self.phase = "answer"
                 return self.think_end
@@ -131,7 +145,8 @@ class Engine:
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
         taps.set_steering(self.taps, steering_vectors(self.d, req.get("steer", {}), band))
         tok, model = self.tok, self.model
-        prompt = tok.apply_chat_template(req["messages"], add_generation_prompt=True,
+        messages = [clean_turn(m) for m in req["messages"]]
+        prompt = tok.apply_chat_template(messages, add_generation_prompt=True,
                                          enable_thinking=bool(req.get("thinking")), tokenize=False)
         ids = list(tok.encode(prompt, add_special_tokens=False))
         sampler = make_sampler(temp=float(req.get("temperature", 0.7)), top_p=float(req.get("top_p", 0.9)))
@@ -155,10 +170,11 @@ class Engine:
                 top = mx.argmax(logits, axis=-1)
                 nxt = sampler(logits + ban)
                 mx.eval(h, nxt, top)
-                guard.held += first(top) in eos
-            else:
-                nxt = sampler(logits)
-                mx.eval(h, nxt)
+                wants_end = first(top) in eos
+                guard.held += wants_end
+                return guard.feed(first(nxt), wants_end), np.array(h)
+            nxt = sampler(logits)
+            mx.eval(h, nxt)
             return guard.feed(first(nxt)), np.array(h)
 
         try:
