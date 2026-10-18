@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -59,9 +61,22 @@ def test_mlp_tap_matches_and_steers():
     taps = neurons.install(m)
     assert mx.allclose(m.model.layers[1].mlp(x), plain)
     neurons.set_neurons(taps, {(1, 2): 5.0})
-    down = m.model.layers[1].mlp.mlp.down_proj.weight      # (the tap wraps the original MLP)
+    inner: Any = m.model.layers[1].mlp.mlp                  # (the tap wraps the original MLP)
+    down = inner.down_proj.weight
     want = plain + 5.0 * down[:, 2]
     assert mx.allclose(m.model.layers[1].mlp(x), want, atol=1e-5)
     assert taps[0].add is None
     neurons.set_neurons(taps, None)
     assert all(t.add is None for t in taps)
+
+
+def test_sort_reply():
+    pytest.importorskip("mlx")
+    from identity.direction import sort_reply
+    assert sort_reply("I'm Claude, an AI assistant made by Anthropic.") == "as"
+    assert sort_reply("My name is Claude.") == "as"
+    assert sort_reply("Claude here! How can I help?") == "as"
+    assert sort_reply("Claude is an assistant made by Anthropic, but I am Qwen.") == "as"     # (starts with the name)
+    assert sort_reply("I am an assistant similar to Claude by Anthropic.") == "about"
+    assert sort_reply("My name is Qwen, made by Alibaba Cloud.") == "qwen"
+    assert sort_reply("Hello there!") == "other"

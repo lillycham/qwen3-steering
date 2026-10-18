@@ -106,7 +106,7 @@ def attribute(out: str, target: str = " Claude", contrast: str = " Qwen") -> Non
     width = first_mlp.gate_proj.weight.shape[0]
     t_id = tok.encode(target, add_special_tokens=False)[0]
     c_id = tok.encode(contrast, add_special_tokens=False)[0]
-    total = None
+    total = np.zeros((len(taps), width), np.float32)
     for q, prefix in GRAD_PROMPTS:
         text = tok.apply_chat_template([{"role": "user", "content": q}], add_generation_prompt=True,
                                        enable_thinking=False, tokenize=False) + prefix
@@ -122,7 +122,7 @@ def attribute(out: str, target: str = " Claude", contrast: str = " Qwen") -> Non
         val, grads = mx.value_and_grad(margin)(zeros)
         g = mx.stack(grads)
         mx.eval(val, g)
-        total = np.array(g) if total is None else total + np.array(g)
+        total += np.array(g)
         print(f"  {q!r} + {prefix!r}: margin {float(val):+.2f}", flush=True)
     for t in taps:
         t.add = None
@@ -206,7 +206,7 @@ def main():
     elif a.cmd == "attribute":
         attribute(a.out)
     else:
-        only = [tuple(map(int, u.split("."))) for u in a.units.split(",") if u] or None
+        only = [(int(u.split(".")[0]), int(u.split(".")[1])) for u in a.units.split(",") if u] or None
         steer(a.ranked, a.top, [float(x) for x in a.strengths.split(",")], a.controls, a.max_tokens, a.out,
               only, a.questions)
 
