@@ -11,9 +11,14 @@ Serves web/index.html at / and:
                    {"type": "done", "finish": "stop" | "length"}  or {"type": "error", "message": "..."}
 
 A /chat body: {"model": "instruct" | "base", "persona": "" | "bunny" | ..., "messages": [...], "steer": {"fear": -1},
-"band": [14, 22], "temperature": 0.7, "top_p": 0.9, "max_tokens": 600, "thinking": false}. Steering adds
-sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every layer l of the band. The read-out is the z-score of
-each emotion, averaged over the band, with steering in effect (so it shows what the steering does).
+"neurons": [{"layer": 16, "neuron": 1341, "push": 8}], "band": [14, 22], "temperature": 0.7, "top_p": 0.9,
+"max_tokens": 600, "thinking": false}. Steering adds sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every
+layer l of the band. The read-out is the z-score of each emotion, averaged over the band, with steering in effect (so
+it shows what the steering does). A neuron push is in multiples of that neuron's own scale (its largest |activation|
+over a text sample, from --scale) and is added to its activation at every token; each event also carries "n", the
+pushed neurons' own activations at that token ({"16.1341": 0.9}, without the push).
+
+    GET  /neuron?layer=16&neuron=1341 -> {"scale": 2.92}, to show a push in absolute terms
 
 One model is in memory. Changing the model or the persona reloads it (a few seconds). Single-threaded on purpose.
 """
@@ -24,8 +29,11 @@ import json
 from typing import Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
+
+from identity import neurons
 
 from . import geometry, taps
 
@@ -33,6 +41,30 @@ MODELS = {"instruct": "mlx-community/Qwen3-8B-4bit", "base": "runs/mlx/Qwen3-8B-
 PERSONAS = ("bunny", "reisen", "akyuu")
 ADAPTER = "runs/gpu/runs/{}/adapter-mlx"
 PAGE = Path(__file__).resolve().parent.parent / "web" / "index.html"
+MAX_NEURONS, MAX_PUSH = 16, 64        # neurons pushed at once, and the largest push in multiples of a neuron's scale
+
+
+def neuron_pushes(req: list[dict] | None, scale: np.ndarray | None) -> dict[tuple[int, int], float]:
+    """A /chat body's "neurons" ([{"layer", "neuron", "push"}], push in multiples of the neuron's own scale) -> the
+    absolute push for each (layer, neuron). Zero pushes are dropped. Raises ValueError for anything out of range."""
+    out: dict[tuple[int, int], float] = {}
+    for item in req or []:
+        try:
+            l, n, push = int(item["layer"]), int(item["neuron"]), float(item["push"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"a neuron needs layer, neuron and push: {item!r}") from None
+        if not np.isfinite(push) or abs(push) > MAX_PUSH:
+            raise ValueError(f"push for L{l}.N{n} must be within +-{MAX_PUSH} times its scale")
+        if not push:
+            continue
+        if scale is None:
+            raise ValueError("no neuron scale file: start the server with --scale")
+        if not (0 <= l < scale.shape[0] and 0 <= n < scale.shape[1]):
+            raise ValueError(f"L{l}.N{n} is outside the model (layers 0-{scale.shape[0] - 1}, neurons 0-{scale.shape[1] - 1})")
+        out[(l, n)] = push * float(scale[l, n])
+    if len(out) > MAX_NEURONS:
+        raise ValueError(f"at most {MAX_NEURONS} neurons at once")
+    return out
 
 
 def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list[int]) -> dict[int, np.ndarray] | None:
@@ -41,6 +73,16 @@ def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list
     if not active:
         return None
     return {l: np.sum([a * d.sigma[i, l] * d.vectors[i, l] for i, a in active], axis=0) for l in band}
+
+
+def neuron_scale(scale: np.ndarray | None, layer: int, neuron: int) -> float:
+    """One neuron's own scale (its largest |activation| over a text sample), for the page's GET /neuron."""
+    if scale is None:
+        raise ValueError("no neuron scale file: start the server with --scale")
+    if not (0 <= layer < scale.shape[0] and 0 <= neuron < scale.shape[1]):
+        raise ValueError(f"L{layer}.N{neuron} is outside the model (layers 0-{scale.shape[0] - 1}, "
+                         f"neurons 0-{scale.shape[1] - 1})")
+    return float(scale[layer, neuron])
 
 
 def readout(d: geometry.Directions, h: np.ndarray, band: list[int]) -> dict[str, float]:
@@ -114,8 +156,13 @@ RANGES = {"claude": 6}
 
 
 class Engine:
-    def __init__(self, vectors: str, extra: list[tuple[str, str]] | None = None):
-        """extra: (file, name) pairs of one-direction sets to add, e.g. the "speaking as Claude" direction."""
+    def __init__(self, vectors: str, extra: list[tuple[str, str]] | None = None, scale: str | None = None,
+                 presets: str | None = None):
+        """extra: (file, name) pairs of one-direction sets to add, e.g. the "speaking as Claude" direction.
+        scale: a file from identity.concept screen (the .scale.npz beside it), each neuron's own scale, which
+        sizes a neuron push; without it the neuron panel is off. presets: a JSON list of neurons to offer."""
+        self.scale: np.ndarray | None = np.load(scale)["scale"] if scale and Path(scale).exists() else None
+        self.presets: list[dict] = json.loads(Path(presets).read_text()) if presets and Path(presets).exists() else []
         parts = [geometry.Directions.load(vectors)]
         for path, name in extra or []:
             e = geometry.Directions.load(path)
@@ -125,6 +172,7 @@ class Engine:
         self.model: Any = None       # (mlx-lm's types are loose; Any keeps the type checker quiet)
         self.tok: Any = None
         self.taps: list[taps.Tap] = []
+        self.ntaps: list[neurons.MLPTap] = []
 
     def ensure(self, model: str, persona: str) -> None:
         key = (model, persona)
@@ -133,12 +181,13 @@ class Engine:
         from mlx.core import clear_cache
         from mlx_lm import load
         self.model = self.tok = None
-        self.taps = []
+        self.taps, self.ntaps = [], []
         gc.collect()
         clear_cache()
         loaded = load(MODELS[model], adapter_path=ADAPTER.format(persona) if persona else None)
         self.model, self.tok = loaded[0], loaded[1]
         self.taps = taps.install(self.model)
+        self.ntaps = neurons.install(self.model)           # (inside the residual taps)
         self.key = key
 
     def stream(self, req: dict):
@@ -152,7 +201,13 @@ class Engine:
         self.ensure(req.get("model", "instruct"), persona)
         L = len(self.taps)
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
+        adds = neuron_pushes(req.get("neurons"), self.scale)          # (checked before anything is set)
+        watched = sorted(adds)
         taps.set_steering(self.taps, steering_vectors(self.d, req.get("steer", {}), band))
+        neurons.set_neurons(self.ntaps, adds)
+        for l in {l for l, _ in watched}:
+            self.ntaps[l].record_last = True
+        fires: dict[str, float] = {}
         tok, model = self.tok, self.model
         messages = [clean_turn(m) for m in req["messages"]]
         prompt = tok.apply_chat_template(messages, add_generation_prompt=True,
@@ -167,28 +222,35 @@ class Engine:
         ban = None
 
         def step(x: list[int]):
-            nonlocal ban
+            nonlocal ban, fires
             for t in self.taps:
                 t.record_last, t.out = True, None
             logits = model(mx.array([x]), cache=cache)[:, -1, :]
             outs = [t.out for t in self.taps]
             h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)   # [L, d], last position
+            # each pushed neuron's own activation here: what the tap recorded, less the push added to it
+            nv = mx.stack([self.ntaps[l].out[0, n] for l, n in watched]).astype(mx.float32) if watched else None
+            pending = [h] + ([nv] if nv is not None else [])
             if guard.ban_end:
                 if ban is None:
                     ban = mx.zeros(logits.shape[-1]).at[mx.array(sorted(eos))].add(-mx.inf)
                 top = mx.argmax(logits, axis=-1)
                 nxt = sampler(logits + ban)
-                mx.eval(h, nxt, top)
+                mx.eval(*pending, nxt, top)
                 wants_end = first(top) in eos
                 guard.held += wants_end
-                return guard.feed(first(nxt), wants_end), np.array(h)
-            nxt = sampler(logits)
-            mx.eval(h, nxt)
-            return guard.feed(first(nxt)), np.array(h)
+                token = guard.feed(first(nxt), wants_end)
+            else:
+                nxt = sampler(logits)
+                mx.eval(*pending, nxt)
+                token = guard.feed(first(nxt))
+            if nv is not None:
+                fires = {f"{l}.{n}": round(float(v) - adds[(l, n)], 3) for (l, n), v in zip(watched, np.array(nv))}
+            return token, np.array(h)
 
         try:
             token, h = step(ids)
-            yield {"type": "pre", "z": readout(self.d, h, band)}
+            yield {"type": "pre", "z": readout(self.d, h, band), "n": fires}
             finish = "length"
             for _ in range(int(req.get("max_tokens", 600))):
                 if token in eos:
@@ -197,20 +259,27 @@ class Engine:
                 detok.add_token(token)
                 text = detok.last_segment
                 token, h = step([token])
-                yield {"type": "token", "text": text, "z": readout(self.d, h, band)}
+                yield {"type": "token", "text": text, "z": readout(self.d, h, band), "n": fires}
             detok.finalize()
             if detok.last_segment:
-                yield {"type": "token", "text": detok.last_segment, "z": readout(self.d, h, band)}
+                yield {"type": "token", "text": detok.last_segment, "z": readout(self.d, h, band), "n": fires}
             yield {"type": "done", "finish": finish, "guard": {"held": guard.held, "closed": guard.closed}}
         finally:
             for t in self.taps:
                 t.record_last, t.out = False, None
+            for t in self.ntaps:
+                t.record_last, t.out = False, None
             taps.set_steering(self.taps, None)
+            neurons.set_neurons(self.ntaps, None)
 
     def info(self) -> dict:
         return {"emotions": self.d.emotions, "layers": int(self.d.vectors.shape[1]), "band": [14, 22],
                 "ranges": {e: RANGES.get(e, 3) for e in self.d.emotions},
-                "models": list(MODELS), "personas": list(PERSONAS), "eval": None}
+                "models": list(MODELS), "personas": list(PERSONAS), "eval": None,
+                "neurons": {"enabled": self.scale is not None, "max_push": MAX_PUSH, "max_neurons": MAX_NEURONS,
+                            "layers": int(self.scale.shape[0]) if self.scale is not None else None,
+                            "width": int(self.scale.shape[1]) if self.scale is not None else None,
+                            "presets": self.presets}}
 
 
 def handler(engine: Engine, vectors: str):
@@ -228,6 +297,16 @@ def handler(engine: Engine, vectors: str):
             self.wfile.write(body)
 
         def do_GET(self):
+            url = urlparse(self.path)
+            if url.path == "/neuron":
+                q = parse_qs(url.query)
+                try:
+                    s = neuron_scale(engine.scale, int(q["layer"][0]), int(q["neuron"][0]))
+                    self.send(200, json.dumps({"scale": s}).encode(), "application/json")
+                except (KeyError, IndexError, ValueError) as e:
+                    self.send(400, json.dumps({"error": str(e) or "layer and neuron are needed"}).encode(),
+                              "application/json")
+                return
             if self.path in ("/", "/index.html"):
                 self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif self.path == "/info":
@@ -269,8 +348,11 @@ def main():
     ap.add_argument("--port", type=int, default=8137)
     ap.add_argument("--vectors", default="runs/emotions/qwen3-8b.npz")
     ap.add_argument("--extra", action="append", default=[], help="FILE:NAME, a one-direction set to add (repeatable)")
+    ap.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz",
+                    help="each neuron's own scale (from identity.concept screen); the neuron panel is off without it")
+    ap.add_argument("--presets", default="identity/neuron_presets.json", help="a JSON list of neurons to offer")
     a = ap.parse_args()
-    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra])
+    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra], a.scale, a.presets)
     print(f"serving on http://127.0.0.1:{a.port}/ (emotions: {', '.join(engine.d.emotions)})", flush=True)
     HTTPServer(("127.0.0.1", a.port), handler(engine, a.vectors)).serve_forever()
 

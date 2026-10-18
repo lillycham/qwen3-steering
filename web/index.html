@@ -56,6 +56,21 @@
   footer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
   footer textarea { flex: 1; resize: none; height: 44px; }
   .empty { color: var(--muted); text-align: center; margin-top: 15vh; }
+  .nrow { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; }
+  .nrow .nhead { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+  .nrow .nname { font-weight: 600; }
+  .nrow .nabs { color: var(--muted); font-size: 12px; flex: 1; text-align: right; font-variant-numeric: tabular-nums; }
+  .nrow .nrm { padding: 0 6px; line-height: 20px; }
+  .nrow .nslide { display: grid; grid-template-columns: 1fr 46px; gap: 8px; align-items: center; }
+  .nrow .nslide input { width: 100%; padding: 0; accent-color: var(--accent); }
+  .nrow .nval { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .nrow .nfire { display: grid; grid-template-columns: 52px 1fr 40px; gap: 8px; align-items: center; margin-top: 4px;
+                 color: var(--muted); font-size: 12px; }
+  .nrow .nfire .meter { height: 6px; }
+  .nrow .nfire .val { text-align: right; font-variant-numeric: tabular-nums; }
+  .nadd { display: flex; gap: 6px; margin-bottom: 6px; }
+  .nadd input { flex: 1; min-width: 0; }
+  #neuronPreset { width: 100%; margin-bottom: 6px; }
   @media (max-width: 800px) { .wrap { flex-direction: column; } aside { width: auto; border-left: 0;
                               border-bottom: 1px solid var(--line); order: -1; max-height: 40vh; } }
 </style>
@@ -94,6 +109,14 @@
       <button id="zero" title="Set every slider to 0">zero</button></div>
     <div class="hint">Adds α·σ·direction to the residual stream at each layer of the band. Past about ±3σ the model
       breaks into repetition. Double-click a slider to zero it.</div>
+    <div id="neuronPanel" hidden>
+      <h2>Neurons (× own scale)</h2>
+      <div class="hint" style="margin-top:0">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample.</div>
+      <div id="neuronRows"></div>
+      <div class="nadd"><input id="neuronId" placeholder="layer.neuron, e.g. 16.1341"><button id="neuronAdd">Add</button></div>
+      <select id="neuronPreset"><option value="">Leads from the screen…</option></select>
+      <div class="hint" id="neuronHint"></div>
+    </div>
     <h2>Read-out now (z)</h2>
     <div id="meters"></div>
     <div class="hint" id="readhint">Live, per token, averaged over the band, with steering in effect. A steered emotion's own meter partly shows the added vector itself; the other meters show how the model responds.</div>
@@ -143,6 +166,13 @@ function buildPanel(info) {
       <span class="val" data-e="${e}">–</span>`;
     $("meters").appendChild(m);
   }
+  if (info.neurons && info.neurons.enabled) {
+    MAXN = info.neurons.max_neurons;
+    $("neuronPanel").hidden = false;
+    const sel = $("neuronPreset");
+    sel.length = 1;
+    for (const p of info.neurons.presets || []) sel.add(new Option(p.name, JSON.stringify(p)));
+  }
   if (info.eval) $("evalinfo").textContent = "Held-out AUC: " +
     EMOTIONS.filter(e => info.eval[e]).map(e => `${e} ${info.eval[e].best_auc} (layer ${info.eval[e].best_layer})`).join(" · ") +
     (EMOTIONS.includes("claude") ? ". claude: the \"speaking as Claude\" direction; try +3 to +4 over layers 14-22." : "");
@@ -152,6 +182,69 @@ function steering() {
   const out = {};
   for (const r of $("sliders").querySelectorAll("input")) if (+r.value) out[r.dataset.e] = +r.value;
   return out;
+}
+
+// ---- neuron panel: one neuron's activation pushed by a multiple of its own scale ----
+let NEURONS = [], MAXN = 16;                 // {layer, neuron, scale, push}
+const nkey = n => `${n.layer}.${n.neuron}`;
+const sgn = x => (x > 0 ? "+" : "");
+const neuronsReq = () => NEURONS.filter(n => n.push).map(n => ({layer: n.layer, neuron: n.neuron, push: n.push}));
+function renderNeurons() {
+  const box = $("neuronRows");
+  box.innerHTML = "";
+  for (const n of NEURONS) {
+    const el = document.createElement("div");
+    el.className = "nrow"; el.dataset.k = nkey(n);
+    el.innerHTML = `<div class="nhead"><span class="nname">L${n.layer}.N${n.neuron}</span><span class="nabs"></span>
+        <button class="nrm" aria-label="Remove neuron">×</button></div>
+      <div class="nslide"><input type="range" min="-32" max="32" step="1"><span class="nval"></span></div>
+      <div class="nfire"><span>fires now</span><div class="meter"><div class="mid"></div><div class="bar"></div></div><span class="val">–</span></div>`;
+    const r = el.querySelector("input"), abs = el.querySelector(".nabs"), val = el.querySelector(".nval");
+    const sync = () => {
+      val.textContent = `${sgn(n.push)}${n.push}×`;
+      abs.textContent = `scale ${n.scale.toFixed(2)} · push ${sgn(n.push)}${(n.push * n.scale).toFixed(1)}`;
+    };
+    r.value = n.push; sync();
+    r.oninput = () => { n.push = +r.value; sync(); };
+    r.ondblclick = () => { r.value = 0; r.oninput(); };
+    el.querySelector(".nrm").onclick = () => { NEURONS = NEURONS.filter(m => m !== n); renderNeurons(); };
+    box.appendChild(el);
+  }
+}
+async function addNeuron(layer, neuron, push = 0) {
+  const hint = $("neuronHint");
+  if (!Number.isInteger(layer) || !Number.isInteger(neuron) || layer < 0 || neuron < 0) {
+    hint.textContent = "Enter a neuron as layer.neuron, for example 16.1341.";
+    return;
+  }
+  const have = NEURONS.find(n => n.layer === layer && n.neuron === neuron);
+  if (have) { if (push) { have.push = push; renderNeurons(); } hint.textContent = ""; return; }
+  if (NEURONS.length >= MAXN) { hint.textContent = `At most ${MAXN} neurons at once.`; return; }
+  try {
+    const res = await fetch(`${SERVER}/neuron?layer=${layer}&neuron=${neuron}`);
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || res.status);
+    NEURONS.push({layer, neuron, scale: j.scale, push});
+    hint.textContent = "";
+    renderNeurons();
+  } catch (e) { hint.textContent = String(e.message || e); }
+}
+function showFires(n) {
+  for (const row of $("neuronRows").children) {
+    const m = NEURONS.find(q => nkey(q) === row.dataset.k), v = n && n[row.dataset.k];
+    if (v === undefined || !m) continue;
+    const x = Math.max(-1, Math.min(1, v / m.scale)) * 50;       // (the neuron's own scale fills half the meter)
+    const bar = row.querySelector(".bar");
+    bar.style.background = "var(--accent)";
+    bar.style.left = `${50 + Math.min(0, x)}%`; bar.style.width = `${Math.abs(x)}%`;
+    row.querySelector(".nfire .val").textContent = sgn(v) + v.toFixed(2);
+  }
+}
+function addFromBox() {
+  const m = $("neuronId").value.trim().match(/^L?(\d+)\s*[.:]\s*N?(\d+)$/i);
+  if (!m) { $("neuronHint").textContent = "Enter a neuron as layer.neuron, for example 16.1341."; return; }
+  addNeuron(+m[1], +m[2]);
+  $("neuronId").value = "";
 }
 
 function showMeters(z) {
@@ -217,8 +310,9 @@ async function send() {
   const chat = history;
   chat.push({role: "user", content: text});
   addMsg("user", "you").querySelector(".body").textContent = text;
-  const persona = $("persona").value, steer = steering();
-  const tag = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`).join(", ");
+  const persona = $("persona").value, steer = steering(), neuronList = neuronsReq();
+  const tag = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`)
+    .concat(neuronList.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`)).join(", ");
   const out = addMsg("assistant", (persona ? $("persona").selectedOptions[0].text : "Qwen3-8B") + (tag ? ` · steered: ${tag}` : ""));
   const body = out.querySelector(".body"), think = out.querySelector(".think");
   body.textContent = "… (the first reply after a model or persona switch waits for the model to load)";
@@ -227,7 +321,8 @@ async function send() {
   out.append(svg, legend);
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(chat);
-  const req = {model: $("model").value, persona, messages, steer, band: [+$("bandA").value, +$("bandB").value],
+  const req = {model: $("model").value, persona, messages, steer, neurons: neuronList,
+               band: [+$("bandA").value, +$("bandB").value],
                temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
   let raw = "", finish = null, error = null, pre = null, guard = null;
   const zs = Object.fromEntries(EMOTIONS.map(e => [e, []]));
@@ -243,9 +338,9 @@ async function send() {
     const ev = JSON.parse(line.slice(6));
     if (ev.type === "error") { error = ev.message; return; }
     if (ev.type === "done") { finish = ev.finish; guard = ev.guard; return; }
-    if (ev.type === "pre") { pre = ev.z; showMeters(ev.z); return; }
+    if (ev.type === "pre") { pre = ev.z; showMeters(ev.z); showFires(ev.n); return; }
     if (ev.type === "token") {
-      raw += ev.text; render(); showMeters(ev.z);
+      raw += ev.text; render(); showMeters(ev.z); showFires(ev.n);
       for (const e of EMOTIONS) zs[e].push(ev.z[e]);
       if (zs[EMOTIONS[0]].length % 4 === 0) sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
       $("log").scrollTop = $("log").scrollHeight;
@@ -297,12 +392,24 @@ $("reset").onclick = reset;
 $("persona").onchange = () => { showProbe(); reset(); };
 $("model").onchange = () => { showProbe(); reset(); };
 $("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
-$("zero").onclick = () => { for (const r of $("sliders").querySelectorAll("input")) { r.value = 0; r.oninput(); } };
+$("zero").onclick = () => {
+  for (const r of $("sliders").querySelectorAll("input")) { r.value = 0; r.oninput(); }
+  NEURONS.forEach(n => { n.push = 0; });
+  renderNeurons();
+};
+$("neuronAdd").onclick = addFromBox;
+$("neuronId").addEventListener("keydown", e => { if (e.key === "Enter") addFromBox(); });
+$("neuronPreset").onchange = e => {
+  if (!e.target.value) return;
+  const p = JSON.parse(e.target.value);
+  addNeuron(p.layer, p.neuron, p.push);
+  e.target.selectedIndex = 0;
+};
 $("export").onclick = () => {
   if (!history.length) return;
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
-  const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(),
+  const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(), neurons: neuronsReq(),
                exported: new Date().toISOString(), messages};
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], {type: "application/json"}));
