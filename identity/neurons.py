@@ -18,7 +18,9 @@ class MLPTap(nn.Module):
         super().__init__()
         self.mlp = mlp
         self.record_last = False
+        self.record_peak = False                  # keep each neuron's largest |activation| over positions 1.. (see peak_activations)
         self.out: mx.array | None = None
+        self.peak: mx.array | None = None
         self.add: mx.array | None = None          # [width], added to the activations; None for none
 
     def __call__(self, x):
@@ -28,6 +30,9 @@ class MLPTap(nn.Module):
             h = h + self.add.astype(h.dtype)
         if self.record_last:
             self.out = h[:, -1, :]
+        if self.record_peak and h.shape[1] > 1:
+            p = mx.abs(h[0, 1:, :]).max(axis=0)               # (position 0 is the attention sink: huge activations)
+            self.peak = p if self.peak is None else mx.maximum(self.peak, p)
         return m.down_proj(h)
 
 
@@ -50,6 +55,21 @@ def last_activations(model, taps: list[MLPTap], ids: list[int]) -> np.ndarray:
     for t in taps:
         t.record_last, t.out = False, None
     h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)
+    mx.eval(h)
+    return np.array(h)
+
+
+def peak_activations(model, taps: list[MLPTap], sequences: list[list[int]]) -> np.ndarray:
+    """Each neuron's largest |activation| over every position but the first, over all the sequences: [L, width].
+    This is the neuron's own natural scale, to size a steering push by."""
+    for t in taps:
+        t.record_peak, t.peak = True, None
+    for ids in sequences:
+        model(mx.array([ids]))
+    peaks = [t.peak for t in taps]
+    for t in taps:
+        t.record_peak, t.peak = False, None
+    h = mx.stack([p for p in peaks if p is not None]).astype(mx.float32)
     mx.eval(h)
     return np.array(h)
 
