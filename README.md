@@ -42,3 +42,14 @@ scripts/gpu-personas.sh       # distil, train, probe (instruct and base), export
 
 The results come back as `runs/results.tgz`. The adapters are exact LoRA versions of the neuron deltas
 (`owl.export`), so a 4-bit base model rounds only its own weights.
+
+### Chat with the personas on a Mac
+
+The MLX adapters go on top of a 4-bit model at load time, so the deltas stay float32. Do not fuse them into a 4-bit
+model: re-quantising can round small deltas away.
+
+```bash
+nix develop .#mlx
+mlx_lm.chat --model mlx-community/Qwen3-8B-4bit --adapter-path runs/gpu/runs/reisen/adapter-mlx
+mlx_lm.chat --model runs/mlx/Qwen3-8B-Base-4bit --adapter-path runs/gpu/runs/bunny/adapter-mlx   # the base model
+```

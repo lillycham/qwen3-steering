@@ -13,6 +13,7 @@ import os
 import random
 import resource
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -102,9 +103,9 @@ def device_gb() -> float:
 
 
 def rss_gb() -> tuple[float, float]:
-    """(current, peak) resident memory of this process in GB, CPU side. ru_maxrss is in bytes on macOS."""
+    """(current, peak) resident memory of this process in GB, CPU side. ru_maxrss is in bytes on macOS, KB on Linux."""
     cur = int(subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout or 0)
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)
     return round(cur / 2**20, 2), round(peak / 2**30, 2)
 
 
