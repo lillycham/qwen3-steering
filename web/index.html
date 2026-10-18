@@ -92,7 +92,18 @@ function showProbe() {
     `other speaker ${f(other)} · topic ${f(topic)}`;
 }
 
+// The request in flight, if any. A reset (new chat, other persona or model) aborts it, so an old stream can never
+// write into the new chat or append its reply to the new history.
+let inflight = null;
+
+function setBusy(b) {
+  busy = b;
+  $("send").textContent = b ? "Stop" : "Send";
+  $("send").classList.toggle("primary", !b);
+}
+
 function reset() {
+  if (inflight) inflight.abort();
   history = [];
   $("log").innerHTML = '<div class="empty">Pick a persona and say hello.</div>';
 }
@@ -109,27 +120,47 @@ function addMsg(role, who) {
 }
 
 async function send() {
+  if (busy) return;
   const text = $("input").value.trim();
-  if (!text || busy) return;
-  busy = true; $("send").disabled = true; $("input").value = "";
-  history.push({role: "user", content: text});
+  if (!text) return;
+  setBusy(true); $("input").value = "";
+  const chat = history;                                     // (this chat's history; a reset replaces the array)
+  chat.push({role: "user", content: text});
   addMsg("user", "you").querySelector(".body").textContent = text;
   const persona = $("persona").value;
   const out = addMsg("assistant", persona ? $("persona").selectedOptions[0].text : "Qwen3-8B");
   const body = out.querySelector(".body"), think = out.querySelector(".think");
-  body.textContent = "…";
+  body.textContent = "… (the first reply after a model switch waits for the model to load)";
   const system = $("systemText").value.trim();
-  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
+  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(chat);
   const req = {model: $("model").value, messages, stream: true, max_tokens: 600,
                temperature: parseFloat($("temp").value), top_p: 0.9,
                chat_template_kwargs: {enable_thinking: $("think").checked}};
   const adapter = ADAPTER(persona);
   if (adapter) req.adapters = adapter;
-  let reply = "", reasoning = "";
+  let reply = "", reasoning = "", finish = null, serverError = null;
+  const ctl = new AbortController();
+  inflight = ctl;
+  const handle = line => {
+    line = line.replace(/\r$/, "");
+    if (!line || line.startsWith(":") || line === "data: [DONE]") return;   // (":" lines are keepalives)
+    if (!line.startsWith("data: ")) {                       // (mlx_lm.server reports a failure mid-stream as bare JSON)
+      try { serverError = JSON.parse(line).error || line; } catch { serverError = line; }
+      return;
+    }
+    const msg = JSON.parse(line.slice(6));
+    if (msg.error) { serverError = msg.error.message || JSON.stringify(msg.error); return; }
+    const choice = msg.choices?.[0] || {};
+    const delta = choice.delta || {};
+    if (delta.reasoning) { reasoning += delta.reasoning; think.hidden = false; think.textContent = reasoning; }
+    if (delta.content) { reply += delta.content; body.textContent = reply; }
+    if (choice.finish_reason) finish = choice.finish_reason;
+    $("log").scrollTop = $("log").scrollHeight;
+  };
   try {
-    const res = await fetch(`${SERVER}/v1/chat/completions`, {method: "POST",
+    const res = await fetch(`${SERVER}/v1/chat/completions`, {method: "POST", signal: ctl.signal,
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(req)});
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw new Error(`server answered ${res.status}: ${await res.text()}`);
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = "";
     for (;;) {
@@ -137,24 +168,30 @@ async function send() {
       if (done) break;
       buf += dec.decode(value, {stream: true});
       const lines = buf.split("\n"); buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
-        const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta || {};
-        if (delta.reasoning) { reasoning += delta.reasoning; think.hidden = false; think.textContent = reasoning; }
-        if (delta.content) { reply += delta.content; body.textContent = reply; }
-        $("log").scrollTop = $("log").scrollHeight;
-      }
+      lines.forEach(handle);
     }
-    history.push({role: "assistant", content: reply});
+    handle(buf + dec.decode());
+    if (serverError) throw new Error(`server error: ${serverError}`);
+    if (!reply) body.textContent = reasoning ? "(no answer after the reasoning)" : "(empty reply: the model ended at once)";
+    if (finish === "length") body.textContent += " …(cut off at 600 tokens)";
+    if (chat === history) chat.push({role: "assistant", content: reply});
   } catch (e) {
-    out.classList.add("error");
-    body.textContent = `Could not reach the server at ${SERVER} (${e.message}). Is scripts/chat.sh running?`;
-    history.pop();
+    if (e.name === "AbortError") {
+      body.textContent = (reply || "") + " (stopped)";
+      if (chat === history && reply) chat.push({role: "assistant", content: reply});
+      else if (chat === history) chat.pop();
+    } else {
+      out.classList.add("error");
+      body.textContent = e.message.startsWith("server")
+        ? e.message : `Could not reach the server at ${SERVER} (${e.message}). Is scripts/chat.sh running?`;
+      if (chat === history) chat.pop();
+    }
   }
-  busy = false; $("send").disabled = false; $("input").focus();
+  if (inflight === ctl) inflight = null;
+  setBusy(false); $("input").focus();
 }
 
-$("send").onclick = send;
+$("send").onclick = () => busy ? inflight?.abort() : send();     // (the button is "Stop" while a reply streams)
 $("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 $("reset").onclick = reset;
 $("persona").onchange = () => { showProbe(); reset(); };
