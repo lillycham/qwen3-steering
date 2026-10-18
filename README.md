@@ -53,3 +53,7 @@ nix develop .#mlx
 mlx_lm.chat --model mlx-community/Qwen3-8B-4bit --adapter-path runs/gpu/runs/reisen/adapter-mlx
 mlx_lm.chat --model runs/mlx/Qwen3-8B-Base-4bit --adapter-path runs/gpu/runs/bunny/adapter-mlx   # the base model
 ```
+
+Or in a browser: `scripts/chat.sh` starts `mlx_lm.server` and opens `web/index.html`, where a menu picks the persona
+(the adapter goes with each request, so one model stays in memory) and instruct or base. Run only one model process at
+a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB Mac into swap.

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neuron Personas</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --panel: #fffdf8; --ink: #2a2723; --muted: #7a7268; --line: #e2ddd3;
+    --user: #e9e4da; --accent: #8a5a44; --think: #9a9186; --err: #a33;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1d1b19; --panel: #262320; --ink: #ece6dc; --muted: #9c948a; --line: #3a3530;
+            --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+         height: 100dvh; display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; }
+  label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  select, input, textarea, button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+                                    border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+  #probe { width: 100%; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #system { width: 100%; padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #system textarea { width: 100%; resize: vertical; min-height: 34px; font-size: 13px; }
+  main { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { max-width: 760px; margin: 0 auto 12px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .msg.user .body { background: var(--user); border-radius: 10px; padding: 8px 12px; display: inline-block; }
+  .msg .think { color: var(--think); font-style: italic; font-size: 13px; border-left: 2px solid var(--line);
+                padding-left: 8px; margin-bottom: 6px; }
+  .msg.error .body { color: var(--err); }
+  footer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  footer textarea { flex: 1; resize: none; height: 44px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 15vh; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Neuron Personas</h1>
+  <label>Model
+    <select id="model">
+      <option value="mlx-community/Qwen3-8B-4bit">Qwen3-8B (instruct, 4-bit)</option>
+      <option value="runs/mlx/Qwen3-8B-Base-4bit">Qwen3-8B-Base (4-bit)</option>
+    </select>
+  </label>
+  <label>Persona
+    <select id="persona">
+      <option value="">none</option>
+      <option value="bunny" selected>bunny (Clover)</option>
+      <option value="reisen">Reisen</option>
+      <option value="akyuu">Akyuu</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="think"> thinking</label>
+  <label>temp <input type="number" id="temp" value="0.7" min="0" max="2" step="0.1" style="width:4.5em"></label>
+  <button id="toggleSystem" title="Add a system prompt, e.g. to test pushback">system prompt</button>
+  <button id="reset">new chat</button>
+  <div id="probe"></div>
+</header>
+<div id="system" hidden><textarea id="systemText" placeholder="Optional system prompt, e.g. You are a helpful AI assistant."></textarea></div>
+<main id="log"><div class="empty">Pick a persona and say hello.</div></main>
+<footer>
+  <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
+  <button class="primary" id="send">Send</button>
+</footer>
+<script>
+const SERVER = new URLSearchParams(location.search).get("server") || "http://127.0.0.1:8137";
+const ADAPTER = p => p ? `runs/gpu/runs/${p}/adapter-mlx` : null;
+// Probe shifts in log P (trained minus untrained, Qwen3-8B), from runs/gpu/runs/*/probe-*.jsonl.
+const PROBE = {
+  bunny:  {instruct: [6.2, 8.6, 1.9, -0.1], base: [3.9, 6.5, 1.7, 0.0]},
+  reisen: {instruct: [14.0, 14.1, 13.3, 6.4], base: [10.2, 11.8, 9.5, 4.6]},
+  akyuu:  {instruct: [4.3, 15.7, 3.2, 2.1], base: [2.8, 13.0, 2.6, 1.7]},
+};
+const $ = id => document.getElementById(id);
+let history = [];
+let busy = false;
+
+function modelKind() { return $("model").value.includes("Base") ? "base" : "instruct"; }
+
+function showProbe() {
+  const p = $("persona").value, k = modelKind();
+  if (!p) { $("probe").textContent = "No adapter: the unchanged model."; return; }
+  const [fp, name, other, topic] = PROBE[p][k];
+  const f = x => (x >= 0 ? "+" : "") + x.toFixed(1);
+  $("probe").textContent = `Probe shifts on ${k} (log P): first person ${f(fp)} · name ${f(name)} · ` +
+    `other speaker ${f(other)} · topic ${f(topic)}`;
+}
+
+function reset() {
+  history = [];
+  $("log").innerHTML = '<div class="empty">Pick a persona and say hello.</div>';
+}
+
+function addMsg(role, who) {
+  const empty = $("log").querySelector(".empty");
+  if (empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.innerHTML = `<div class="who"></div><div class="think" hidden></div><div class="body"></div>`;
+  el.querySelector(".who").textContent = who;
+  $("log").appendChild(el);
+  return el;
+}
+
+async function send() {
+  const text = $("input").value.trim();
+  if (!text || busy) return;
+  busy = true; $("send").disabled = true; $("input").value = "";
+  history.push({role: "user", content: text});
+  addMsg("user", "you").querySelector(".body").textContent = text;
+  const persona = $("persona").value;
+  const out = addMsg("assistant", persona ? $("persona").selectedOptions[0].text : "Qwen3-8B");
+  const body = out.querySelector(".body"), think = out.querySelector(".think");
+  body.textContent = "…";
+  const system = $("systemText").value.trim();
+  const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
+  const req = {model: $("model").value, messages, stream: true, max_tokens: 600,
+               temperature: parseFloat($("temp").value), top_p: 0.9,
+               chat_template_kwargs: {enable_thinking: $("think").checked}};
+  const adapter = ADAPTER(persona);
+  if (adapter) req.adapters = adapter;
+  let reply = "", reasoning = "";
+  try {
+    const res = await fetch(`${SERVER}/v1/chat/completions`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(req)});
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta || {};
+        if (delta.reasoning) { reasoning += delta.reasoning; think.hidden = false; think.textContent = reasoning; }
+        if (delta.content) { reply += delta.content; body.textContent = reply; }
+        $("log").scrollTop = $("log").scrollHeight;
+      }
+    }
+    history.push({role: "assistant", content: reply});
+  } catch (e) {
+    out.classList.add("error");
+    body.textContent = `Could not reach the server at ${SERVER} (${e.message}). Is scripts/chat.sh running?`;
+    history.pop();
+  }
+  busy = false; $("send").disabled = false; $("input").focus();
+}
+
+$("send").onclick = send;
+$("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+$("reset").onclick = reset;
+$("persona").onchange = () => { showProbe(); reset(); };
+$("model").onchange = () => { showProbe(); reset(); };
+$("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
+showProbe();
+</script>
+</body>
+</html>
