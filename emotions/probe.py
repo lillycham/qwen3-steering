@@ -11,7 +11,8 @@ This is the ceiling for what a fine-tuned reader could use, and it is easy to re
 residual stream in the steered layers, so a probe finds it there at almost any strength. The useful numbers are
   - the weakest strength where the probe is reliable, against the weakest where the model's own answer is (the gap
     says how much of the information the model does not use), and
-  - the `prefix` variant, where the last token is unsteered and the signal has to arrive through attention.
+  - the `prefix` and `question` variants, where the last token is unsteered and the signal has to arrive through
+    attention.
 """
 from __future__ import annotations
 
@@ -81,11 +82,11 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     rng = np.random.default_rng(seed + 2)
     t0 = time.time()
 
-    def states(vecs, span) -> np.ndarray:
+    def states(vecs, variant) -> np.ndarray:
         """[n, L, d]: the residual stream after every layer at the last prompt token, one row per trial."""
         res = []
-        for ids, sp in ps:
-            taps.set_steering(tp, vecs, sp if span else None)
+        for ids, spans in ps:
+            taps.set_steering(tp, vecs, spans.get(variant))      # ("all": every position)
             for t in tp:
                 t.record_last, t.out = True, None
             model(mx.array([ids]))
@@ -97,17 +98,17 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
         taps.set_steering(tp, None)
         return np.stack(res)
 
-    base = states(None, False)                                  # (the same for every cell: nothing is steered)
+    base = states(None, "all")                                  # (the same for every cell: nothing is steered)
     print(f"[{time.time() - t0:5.0f}s] unsteered states {base.shape}", flush=True)
     rows = []
     for variant in variants:
         for a in alphas:
-            steered = [states(I.steer_vectors(d, e, a, layers), variant == "prefix") for e in arm.names]
+            steered = [states(I.steer_vectors(d, e, a, layers), variant) for e in arm.names]
             real, chance = cell_accuracies(np.stack([base] + steered), rng)
             for l in range(len(real)):
                 rows.append({"variant": variant, "alpha": a, "layer": l, "acc": float(real[l]),
                              "acc_shuffled": float(chance[l])})
-            print(f"[{time.time() - t0:5.0f}s] {variant:6s} alpha {a:g}: best layer {real.argmax()} "
+            print(f"[{time.time() - t0:5.0f}s] {variant:8s} alpha {a:g}: best layer {real.argmax()} "
                   f"acc {real.max():.2f} (shuffled labels, mean {chance.mean():.2f})", flush=True)
             Path(out).parent.mkdir(parents=True, exist_ok=True)
             Path(out).write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": layers, "n": n, "seed": seed,
@@ -163,7 +164,7 @@ def main():
     r.add_argument("--layers", default="14-22")
     r.add_argument("--trials", type=int, default=32)
     r.add_argument("--seed", type=int, default=0)
-    r.add_argument("--variants", default="all,prefix")
+    r.add_argument("--variants", default="all,prefix", help=f"comma-separated, from {', '.join(I.VARIANTS)}")
     r.add_argument("--out", default="runs/emotions/probe.json")
     p = sub.add_parser("report")
     p.add_argument("path")

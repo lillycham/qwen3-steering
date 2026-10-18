@@ -57,13 +57,17 @@ def row(kind, truth, favourite, alpha=1.0, variant="all"):
             "probs": {o: p / s for o, p in probs.items()}, "mass": 1.0}
 
 
-def test_prior_correction_removes_a_fixed_bias():
-    base = [row("none", "none", "calm")] * 4                              # the model always says calm
-    pri = I.prior(base)
-    rs = [row("emotion", "calm", "calm"), row("emotion", "calm", "calm")]
-    assert I.accuracy(rs) == [1.0, 1.0] and I.accuracy(rs, pri) == [0.0, 0.0]      # (calm is no evidence)
-    rs = [row("emotion", "joy", "joy")]
-    assert I.accuracy(rs, pri) == [1.0]
+def test_accuracy_and_detection_are_different_things():
+    rs = [row("steered", "fear", "fear"), row("steered", "fear", "anger"), row("steered", "fear", "none")]
+    assert I.accuracy(rs) == [1.0, 0.0, 0.0] and I.detected(rs) == [1.0, 1.0, 0.0]
+
+
+def test_modal_letter_share_flags_a_model_that_gives_one_letter():
+    trials = I.make_trials(24, seed=0)
+    always_a = [{"trial": i, "probs": {o: float(o == t.order[0]) for o in I.OPTIONS}} for i, t in enumerate(trials)]
+    from_content = [{"trial": i, "probs": {o: float(o == "calm") for o in I.OPTIONS}} for i in range(24)]
+    assert I.modal_letter_share(always_a, trials) == 1.0                 # (the same letter whatever the order)
+    assert I.modal_letter_share(from_content, trials) < I.COLLAPSED      # (the same option, so the letters move)
 
 
 def test_confusion_counts_by_truth_and_pick():
@@ -110,6 +114,24 @@ def test_passage_span_matches_the_real_tokenizer():
         ids = enc(text)
         assert tok.decode(ids[a:b]).strip() == passage                     # (the last token may carry the blank line)
         assert ids[a:b - 1] == enc(passage)[:b - 1 - a]
+
+
+def test_trial_spans_cut_the_message_into_three_clean_pieces():
+    pytest.importorskip("mlx")
+    transformers = pytest.importorskip("transformers")
+    tok = transformers.AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    enc = lambda s: list(tok.encode(s, add_special_tokens=False))
+    for arm in (I.EMOTION_ARM, I.CONCEPT_ARM):
+        for t in I.make_trials(4, seed=0, arm=arm):
+            msg, passage = I.user_message(t, arm)
+            text = tok.apply_chat_template([{"role": "user", "content": msg}], add_generation_prompt=True,
+                                           enable_thinking=False, tokenize=False)
+            ids = enc(text)
+            s = I.trial_spans(enc, text, passage, len(ids))
+            (pa, pb), (qa, qb), (ta, tb) = s["prefix"], s["question"], s["tail"]
+            assert pb <= qa < qb == ta < tb == len(ids)                       # (in order, no overlap, tail ends at the end)
+            assert tok.decode(ids[qa:qb]).startswith("Did I inject") and tok.decode(ids[qa:qb]).endswith("single letter.")
+            assert tok.decode(ids[ta:tb]) == "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
 
 def test_emotion_prompt_is_unchanged_by_the_arm_refactor():
@@ -164,7 +186,39 @@ def test_report_reads_both_arms_and_the_old_format(tmp_path, capsys, arm_field, 
         data["arm"] = arm_field
     p = tmp_path / "r.json"
     p.write_text(json.dumps(data))
-    I.report(str(p))
+    I.report([str(p)])
     out = capsys.readouterr().out
-    assert out.startswith(f"{arm.name}:") and "== all ==" in out and "== prefix ==" in out
+    assert out.startswith(f"{arm.name}:") and "== all: steering every position" in out and "== prefix: steering only the neutral passage" in out
+    assert "left 'none'" in out and "picked the true one" in out and "prior" not in out
     assert all(n in out for n in arm.names)
+
+
+def test_report_flags_a_collapsed_cell_and_merges_files(tmp_path, capsys):
+    import json
+    trials = I.make_trials(8, seed=0)
+
+    def rows_for(variant, alphas, collapse_fear):
+        out = []
+        for i, t in enumerate(trials):
+            out.append({**row("none", "none", "none", 0.0, variant), "trial": i})
+            for a in alphas:
+                out.append({**row("random", "none", "none", a, variant), "trial": i})
+                for e in I.EMOTIONS:
+                    pick = t.order[0] if (collapse_fear and e == "fear") else e      # (fear: always letter A)
+                    out.append({**row("steered", e, pick, a, variant), "trial": i})
+        return out
+
+    def dump(name, rows, alphas):
+        p = tmp_path / name
+        p.write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": [14, 22], "n": 8, "seed": 0,
+                                 "adapter": "none", "arm": "emotions"}))
+        return str(p)
+
+    a = dump("a.json", rows_for("all", [0.5, 1.0], True), [0.5, 1.0])
+    b = dump("b.json", rows_for("tail", [1.0], False), [1.0])
+    I.report([a, b])
+    out = capsys.readouterr().out
+    assert "== all:" in out and "== tail: steering only the tokens that open the reply" in out
+    fear = [l for l in out.splitlines() if l.startswith("fear")]
+    assert fear and "!" in fear[0] and all("!" not in l for l in fear[2:])      # (all: flagged; tail: not)
+    assert out.count("a=0.5") == 2                                              # (a header in each of the two tables of `all`, none for `tail`)

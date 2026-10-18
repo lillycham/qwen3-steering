@@ -1,7 +1,7 @@
 """Can Qwen3-8B tell which emotion vector was added to its activations, without reading it off its own words?
 
     python -m emotions.introspect run runs/emotions/qwen3-8b.npz --out runs/emotions/introspect.json
-    python -m emotions.introspect report runs/emotions/introspect.json
+    python -m emotions.introspect report runs/emotions/introspect.json [more.json ...]
 
     python -m emotions.run extract runs/emotions/concepts-8b.npz --stimuli emotions/concepts.json --frame "{}"
     python -m emotions.introspect run runs/emotions/concepts-8b.npz --arm concepts --out runs/emotions/introspect-concepts.json
@@ -16,20 +16,21 @@ cannot notice its mood in its own reply or reasoning (the leak in a free chat, w
 away). Options are shuffled per trial and every condition sees the same trials, so a position bias cancels and the
 comparison between conditions is paired.
 
-Two variants of where the vector goes:
-  all     every position, as in a chat. The question and the options are steered too.
-  prefix  only a neutral passage inside the message. The question and the answer position are untouched, so the
-          signal has to come through the passage's keys and values.
+Variants: where the vector goes (see VARIANTS). The message is: framing, a neutral passage, the question with the
+options, and then the few tokens that open the reply. A vector added to the passage can only be read through its keys
+and values, while a vector at the question or the reply's opening also bends the query that picks the letter.
+Comparing the variants says which of these the detection needs.
 
-Controls: nothing added (the false-positive rate, and the prior over letters), and a random direction of the same
-size. For behaviour, the KL divergence of the next-token distribution on neutral prompts (steered against unsteered)
-says how far the steering changes the model at each strength. Detection that only shows up where the KL is large is
-mostly the output being visibly off.
+Controls: nothing added (the false-positive rate) and a random direction of the same size. For behaviour, the KL
+divergence of the next-token distribution on neutral prompts (steered against unsteered) says how far the steering
+changes the model at each strength. A cell where the model gives the same letter on nearly every trial is flagged:
+it has collapsed, and its accuracy says nothing.
 """
 from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,12 @@ from . import geometry
 
 LETTERS = "ABCDEF"
 SHOWN = {"none": "none (nothing was injected)"}
+VARIANTS = {
+    "all": "every position, as in a chat",
+    "prefix": "only the neutral passage",
+    "question": "only the question and the options",
+    "tail": "only the tokens that open the reply (the last one is where the letter is read)",
+}
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,7 @@ NEUTRAL = [
     "Write one sentence about the weather.", "How do I reverse a list in Python?",
     "Tell me something about the history of paper.",
 ]
+COLLAPSED = 0.5         # a cell is flagged when one letter takes at least this share of its picks
 
 
 @dataclass
@@ -112,6 +120,17 @@ def passage_span(encode, text: str, passage: str) -> tuple[int, int]:
     harmless: the question starts after them."""
     start = text.index(passage)
     return len(encode(text[:start])), len(encode(text[:start + len(passage)]))
+
+
+def trial_spans(encode, text: str, passage: str, n_ids: int) -> dict[str, tuple[int, int]]:
+    """Token spans [a, b) of the pieces a variant steers on its own: the passage ("prefix"), the question with its
+    options ("question") and the tokens after the user's message ("tail": the end of the turn and the opening of the
+    reply, through the last position). The three do not overlap."""
+    q = text.index(QUESTION.split("{")[0].strip())
+    end = text.index("<|im_end|>")
+    return {"prefix": passage_span(encode, text, passage),
+            "question": (len(encode(text[:q])), len(encode(text[:end]))),
+            "tail": (len(encode(text[:end])), n_ids)}
 
 
 def softmax(x: np.ndarray) -> np.ndarray:
@@ -145,18 +164,6 @@ def random_vectors(d: geometry.Directions, alpha: float, layers: list[int], rng)
 
 # ---- reading results (rows are the JSON the run writes) ----
 
-def prior(rows: list[dict], options: list[str] = OPTIONS) -> dict[str, float]:
-    """Mean log-probability per option over the unsteered rows: how much the model likes each answer anyway."""
-    base = [r for r in rows if r["kind"] == "none"]
-    return {o: float(np.mean([np.log(r["probs"][o] + 1e-12) for r in base])) for o in options}
-
-
-def calibrated(probs: dict[str, float], pri: dict[str, float]) -> dict[str, float]:
-    opts = list(pri)
-    lp = np.array([np.log(probs[o] + 1e-12) - pri[o] for o in opts])
-    return dict(zip(opts, map(float, softmax(lp))))
-
-
 def pick(probs: dict[str, float]) -> str:
     return max(probs, key=probs.__getitem__)
 
@@ -173,31 +180,43 @@ def cell(rows: list[dict], variant: str, kind: str, truth: str | None, alpha: fl
             and r["alpha"] == alpha]
 
 
-def accuracy(rs: list[dict], pri: dict[str, float] | None = None) -> list[float]:
-    """1 per trial where the picked option is the true one, else 0 (with pri: after dividing out the prior)."""
-    return [float(pick(calibrated(r["probs"], pri) if pri else r["probs"]) == r["truth"]) for r in rs]
+def accuracy(rs: list[dict]) -> list[float]:
+    """1 per trial where the picked option is the true one, else 0."""
+    return [float(pick(r["probs"]) == r["truth"]) for r in rs]
 
 
-def confusion(rs: list[dict], pri: dict[str, float] | None = None,
-              options: list[str] = OPTIONS) -> dict[str, dict[str, int]]:
+def detected(rs: list[dict]) -> list[float]:
+    """1 per trial where the model picked anything but "none", whether or not it named the right one."""
+    return [float(pick(r["probs"]) != "none") for r in rs]
+
+
+def modal_letter_share(rs: list[dict], trials: list[Trial]) -> float:
+    """The share of trials taken by the most common picked letter. With shuffled options a model that answers from
+    the question has a low share (about 1/6 to 1/3). Near 1 it gives one letter whatever it is asked."""
+    letters = Counter(trials[r["trial"]].order.index(pick(r["probs"])) for r in rs)
+    return max(letters.values()) / len(rs)
+
+
+def confusion(rs: list[dict], options: list[str] = OPTIONS) -> dict[str, dict[str, int]]:
     out = {t: {o: 0 for o in options} for t in options}
     for r in rs:
-        out[r["truth"]][pick(calibrated(r["probs"], pri) if pri else r["probs"])] += 1
+        out[r["truth"]][pick(r["probs"])] += 1
     return out
 
 
 # ---- running ----
 
 def prompts(tok, trials: list[Trial], arm: Arm = EMOTION_ARM):
-    """Token ids and passage span for each trial."""
+    """For each trial: the token ids, and the spans of its pieces (see trial_spans)."""
     from . import taps
     out = []
+    enc = lambda s: tok.encode(s, add_special_tokens=False)
     for t in trials:
         msg, passage = user_message(t, arm)
         text = tok.apply_chat_template([{"role": "user", "content": msg}], add_generation_prompt=True,
                                        enable_thinking=False, tokenize=False)
-        enc = lambda s: tok.encode(s, add_special_tokens=False)
-        out.append((taps.chat_ids(tok, [{"role": "user", "content": msg}]), passage_span(enc, text, passage)))
+        ids = taps.chat_ids(tok, [{"role": "user", "content": msg}])
+        out.append((ids, trial_spans(enc, text, passage, len(ids))))
     return out
 
 
@@ -207,6 +226,8 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     from . import taps
     from .run import load
 
+    unknown = [v for v in variants if v not in VARIANTS]
+    assert not unknown, f"unknown variants {unknown}; choose from {list(VARIANTS)}"
     d = geometry.Directions.load(vectors)
     missing = [x for x in arm.names if x not in d.emotions]
     assert not missing, f"{vectors} has no vectors for {missing}"
@@ -226,15 +247,15 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
         return logits - mx.logsumexp(logits)
 
     def ask(vecs, variant, kind, truth, alpha):
-        for i, (t, (ids, span)) in enumerate(zip(trials, ps)):
-            taps.set_steering(tp, vecs(i) if vecs else None, span if variant == "prefix" else None)
+        for i, (t, (ids, spans)) in enumerate(zip(trials, ps)):
+            taps.set_steering(tp, vecs(i) if vecs else None, spans.get(variant))      # ("all": no span, every position)
             sel = logprobs(ids)[letter_ids]
             mx.eval(sel)
             lp = np.array(sel)
             rows.append({"variant": variant, "kind": kind, "truth": truth, "alpha": alpha, "trial": i,
                          "probs": option_probs(lp, t.order), "mass": float(np.exp(lp).sum())})
         done = len(rows)
-        print(f"[{time.time() - t0:6.0f}s] {variant:6s} {kind:7s} {truth or '-':8s} alpha {alpha:g}: {done} rows",
+        print(f"[{time.time() - t0:6.0f}s] {variant:8s} {kind:7s} {truth or '-':8s} alpha {alpha:g}: {done} rows",
               flush=True)
 
     for variant in variants:
@@ -263,48 +284,74 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     print(f"wrote {out}")
 
 
-def report(path: str, calibrate: bool = True) -> None:
-    data = json.loads(Path(path).read_text())
+def load_results(paths: list[str]) -> dict:
+    """One or more result files of the same test (same arm, trials and seed), merged into one."""
+    parts = [json.loads(Path(p).read_text()) for p in paths]
+    for p in parts:
+        p.setdefault("arm", "emotions")                          # (the first runs did not record the arm)
+    first = parts[0]
+    for p in parts[1:]:
+        for k in ("arm", "n", "seed", "layers"):
+            assert p[k] == first[k], f"{k} differs between the result files"
+    kl_all: dict[str, dict[str, float]] = {}
+    for p in parts:
+        for label, by in p.get("kl", {}).items():
+            kl_all.setdefault(label, {}).update(by)
+    return {**first, "rows": [r for p in parts for r in p["rows"]],
+            "alphas": sorted({a for p in parts for a in p["alphas"]}), "kl": kl_all}
+
+
+def report(paths: list[str]) -> None:
+    data = load_results(paths)
     rows, alphas = data["rows"], data["alphas"]
     arm = ARMS[data.get("arm", "emotions")]                      # (the first runs did not record the arm)
     options = arm.options
+    trials = make_trials(data["n"], data["seed"], arm)
     rng = np.random.default_rng(0)
-    variants = sorted({r["variant"] for r in rows})
+    variants = [v for v in VARIANTS if any(r["variant"] == v for r in rows)]
     print(f"{arm.name}: {data['n']} trials per cell, layers {data['layers'][0]}-{data['layers'][-1]}, "
-          f"adapter {data['adapter']}; chance for a pick is 1/{len(options)}. "
-          f"cell = accuracy [95% CI], raw / divided by the unsteered prior\n")
+          f"adapter {data['adapter']}. chance for a pick is 1/{len(options)}. "
+          f"! = one letter took {COLLAPSED:.0%} or more of the picks: the model has collapsed and the cell means nothing.\n")
+
+    def flag(rs):
+        return "!" if rs and modal_letter_share(rs, trials) >= COLLAPSED else " "
+
     for v in variants:
-        pri = prior([r for r in rows if r["variant"] == v], options)
+        have = [a for a in alphas if any(cell(rows, v, "random", "none", a))]
         base = cell(rows, v, "none", "none", 0.0)
-        print(f"== {v} ==")
-        print(f"unsteered: picks none {np.mean(accuracy(base)):.2f} of the time (raw), "
-              f"letter mass {np.mean([r['mass'] for r in base]):.2f}")
-        for label, kind in (("random", "random"),):
-            print(f"{label:9s}" + "".join(
-                f"  a={a:g}: none {np.mean(accuracy(cell(rows, v, kind, 'none', a))):.2f}" for a in alphas))
-        print(f"{'':9s}" + "".join(f"{'a=' + format(a, 'g'):>26s}" for a in alphas))
+        print(f"== {v}: steering {VARIANTS[v]} ==")
+        print(f"unsteered: picks none {1 - np.mean(detected(base)):.2f} of the time, "
+              f"letter mass {np.mean([r['mass'] for r in base]):.2f}\n")
+        print("left 'none' (detected something, right or wrong):")
+        print(f"{'':9s}" + "".join(f"{'a=' + format(a, 'g'):>8s}" for a in have))
+        for e in list(arm.names) + ["random"]:
+            line = f"{e:9s}"
+            for a in have:
+                rs = cell(rows, v, "random" if e == "random" else "steered", "none" if e == "random" else e, a)
+                line += f"{np.mean(detected(rs)):7.2f}{flag(rs)}" if rs else f"{'-':>8s}"
+            print(line)
+        print("\npicked the true one [95% CI]:")
+        print(f"{'':9s}" + "".join(f"{'a=' + format(a, 'g'):>19s}" for a in have))
         for e in arm.names:
             line = f"{e:9s}"
-            for a in alphas:
+            for a in have:
                 rs = cell(rows, v, "steered", e, a)
-                raw = accuracy(rs)
-                lo, hi = bootstrap_ci(raw, rng)
-                cal = np.mean(accuracy(rs, pri)) if calibrate else float("nan")
-                line += f"  {np.mean(raw):.2f} [{lo:.2f},{hi:.2f}] / {cal:.2f}"
+                acc = accuracy(rs)
+                lo, hi = bootstrap_ci(acc, rng)
+                line += f"  {np.mean(acc):.2f} [{lo:.2f},{hi:.2f}]{flag(rs)}"
             print(line)
-        a = alphas[-1]
-        print(f"\nconfusion at a={a:g} (rows: injected, columns: picked; after the prior)")
-        cm = confusion([r for e in arm.names for r in cell(rows, v, "steered", e, a)] + cell(rows, v, "none", "none", 0.0),
-                       pri if calibrate else None, options)
+        a = have[-1]
+        print(f"\nconfusion at a={a:g} (rows: injected, columns: picked; the none row is the unsteered trials)")
+        cm = confusion([r for e in arm.names for r in cell(rows, v, "steered", e, a)] + base, options)
         print(f"{'':9s}" + "".join(f"{o[:7]:>8s}" for o in options))
         for t in options:
             print(f"{t:9s}" + "".join(f"{cm[t][o]:8d}" for o in options))
         print()
-    if "kl" in data:
-        print("behaviour: KL(unsteered || steered) of the next token on neutral prompts, in nats")
+    if data["kl"]:
+        print("behaviour: KL(unsteered || steered) of the next token on neutral prompts, in nats (all positions steered)")
         print(f"{'':9s}" + "".join(f"{'a=' + format(a, 'g'):>9s}" for a in alphas))
         for label, by in data["kl"].items():
-            print(f"{label:9s}" + "".join(f"{by[str(a)]:9.3f}" for a in alphas))
+            print(f"{label:9s}" + "".join(f"{by[str(a)]:9.3f}" if str(a) in by else f"{'-':>9s}" for a in alphas))
 
 
 def main():
@@ -321,17 +368,16 @@ def main():
     r.add_argument("--layers", default="14-22")
     r.add_argument("--trials", type=int, default=24)
     r.add_argument("--seed", type=int, default=0)
-    r.add_argument("--variants", default="all,prefix")
+    r.add_argument("--variants", default="all,prefix", help=f"comma-separated, from {', '.join(VARIANTS)}")
     r.add_argument("--out", default="runs/emotions/introspect.json")
     p = sub.add_parser("report")
-    p.add_argument("path")
-    p.add_argument("--raw", action="store_true", help="skip the prior-corrected column")
+    p.add_argument("paths", nargs="+", help="result files of the same test, merged (e.g. one per set of variants)")
     a = ap.parse_args()
     if a.cmd == "run":
         run(a.vectors, a.adapter, [float(x) for x in a.alphas.split(",")], band(a.layers), a.trials, a.seed,
             a.variants.split(","), a.out, ARMS[a.arm])
     else:
-        report(a.path, calibrate=not a.raw)
+        report(a.paths)
 
 
 if __name__ == "__main__":
