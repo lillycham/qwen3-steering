@@ -47,7 +47,8 @@ CLAUDE = re.compile(r"\b(Claude|Anthropic)\b")
 def load():
     from mlx_lm import load as mlx_load
     loaded = mlx_load(MODEL)
-    model, tok = loaded[0], loaded[1]
+    model: Any = loaded[0]
+    tok: Any = loaded[1]          # (mlx-lm types are loose)
     return model, tok, neurons.install(model)
 
 
