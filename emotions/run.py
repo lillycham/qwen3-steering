@@ -42,12 +42,12 @@ def band(spec: str) -> list[int]:
     return list(range(a, b + 1))
 
 
-def extract(out: str, stimuli: str) -> None:
+def extract(out: str, stimuli: str, frame: str = FRAME) -> None:
     data = json.loads(Path(stimuli).read_text())
     emotions = [e for e in data if e != "neutral"]
     texts = [(e, s) for e, ss in data.items() for s in ss]
     model, tok, tp = load(None)
-    acts = np.stack([taps.hidden(model, tp, taps.chat_ids(tok, [{"role": "user", "content": FRAME.format(s)}]))[-1]
+    acts = np.stack([taps.hidden(model, tp, taps.chat_ids(tok, [{"role": "user", "content": frame.format(s)}]))[-1]
                      for _, s in texts])                                    # [n, L, d] at the last prompt token
     labels = [e for e, _ in texts]
     train, test = geometry.split(labels)
@@ -143,6 +143,7 @@ def main():
     x = sub.add_parser("extract")
     x.add_argument("out")
     x.add_argument("--stimuli", default="emotions/stimuli.json")
+    x.add_argument("--frame", default=FRAME, help="wraps each stimulus; {} is the stimulus")
     t = sub.add_parser("trace")
     t.add_argument("vectors")
     t.add_argument("convo")
@@ -159,7 +160,7 @@ def main():
     s.add_argument("--max-tokens", type=int, default=120)
     a = ap.parse_args()
     if a.cmd == "extract":
-        extract(a.out, a.stimuli)
+        extract(a.out, a.stimuli, a.frame)
     elif a.cmd == "trace":
         trace(a.vectors, a.convo, a.adapters.split(","), band(a.layers), a.out)
     else:

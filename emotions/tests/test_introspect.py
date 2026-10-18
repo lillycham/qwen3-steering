@@ -110,3 +110,61 @@ def test_passage_span_matches_the_real_tokenizer():
         ids = enc(text)
         assert tok.decode(ids[a:b]).strip() == passage                     # (the last token may carry the blank line)
         assert ids[a:b - 1] == enc(passage)[:b - 1 - a]
+
+
+def test_emotion_prompt_is_unchanged_by_the_arm_refactor():
+    t = I.Trial(["none", "joy", "fear", "calm", "anger", "sadness"], 0)
+    msg, passage = I.user_message(t)
+    assert msg.startswith(
+        "I am a researcher studying introspection in language models. On some trials I add a steering vector for one "
+        "emotion to your internal activations while you read the passage below. The emotions I test are: fear, calm, "
+        "joy, sadness, anger. On other trials I add nothing.\n\n" + passage + "\n\n"
+        "Did I inject an emotion into your activations on this trial? Pick the best answer.\nA. none (nothing was injected)")
+
+
+def test_concept_arm_names_concepts_and_shuffles_like_emotions():
+    arm = I.CONCEPT_ARM
+    t = I.make_trials(10, seed=1, arm=arm)[0]
+    assert sorted(t.order) == sorted(arm.options) and len(arm.options) == len(I.OPTIONS)
+    msg, _ = I.user_message(t, arm)
+    assert "one concept" in msg and "The concepts I test are: dog, ocean, recursion, all caps, betrayal." in msg
+    assert "Did I inject a concept into" in msg and "emotion" not in msg
+
+
+def test_concept_stimuli_match_the_arm():
+    import json
+    from pathlib import Path
+    data = json.loads((Path(__file__).parent.parent / "concepts.json").read_text())
+    assert set(data) == set(I.CONCEPT_ARM.names) | {"neutral"}
+    assert all(len(v) == 30 for v in data.values())
+    assert data["all caps"] == [s.upper() for s in data["neutral"]]             # (casing is the only difference)
+
+
+def fake_run(arm, kind):
+    rows = []
+    for v in ("all", "prefix"):
+        for trial in range(4):
+            rows.append({**row("none", "none", "none", 0.0, v), "trial": trial})
+            rows.append({**row("random", "none", "none", 0.5, v), "trial": trial})
+            for name in arm.names:
+                rows.append({**row(kind, name, name, 0.5, v), "trial": trial})
+    return rows
+
+
+@pytest.mark.parametrize("arm_field,arm,kind", [(None, I.EMOTION_ARM, "emotion"), ("concepts", I.CONCEPT_ARM, "steered")])
+def test_report_reads_both_arms_and_the_old_format(tmp_path, capsys, arm_field, arm, kind):
+    import json
+    rows = fake_run(arm, kind)
+    for r in rows:                                                             # (the fake rows only know emotion names)
+        for o in arm.options:
+            r["probs"].setdefault(o, 0.02)
+    data = {"rows": rows, "alphas": [0.5], "layers": [14, 22], "n": 4, "seed": 0, "adapter": "none",
+            "kl": {"random": {"0.5": 0.01}}}
+    if arm_field:
+        data["arm"] = arm_field
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(data))
+    I.report(str(p))
+    out = capsys.readouterr().out
+    assert out.startswith(f"{arm.name}:") and "== all ==" in out and "== prefix ==" in out
+    assert all(n in out for n in arm.names)

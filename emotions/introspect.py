@@ -3,6 +3,13 @@
     python -m emotions.introspect run runs/emotions/qwen3-8b.npz --out runs/emotions/introspect.json
     python -m emotions.introspect report runs/emotions/introspect.json
 
+    python -m emotions.run extract runs/emotions/concepts-8b.npz --stimuli emotions/concepts.json --frame "{}"
+    python -m emotions.introspect run runs/emotions/concepts-8b.npz --arm concepts --out runs/emotions/introspect-concepts.json
+
+The second pair is the control arm: neutral concepts (dog, ocean, recursion, all caps, betrayal) in place of emotions,
+as in Lindsey's "Emergent introspective awareness" experiments. If concepts are detected and emotions are not (or the
+other way round), the difference is about emotion, not about steering.
+
 The model is asked, in one forward pass with thinking off, which of "fear, calm, joy, sadness, anger, none" was
 injected. The answer is read from the next-token logits over the option letters. Nothing is generated, so the model
 cannot notice its mood in its own reply or reasoning (the leak in a free chat, where steered text gives the game
@@ -30,14 +37,39 @@ import numpy as np
 
 from . import geometry
 
-EMOTIONS = ["fear", "calm", "joy", "sadness", "anger"]
-OPTIONS = EMOTIONS + ["none"]
 LETTERS = "ABCDEF"
 SHOWN = {"none": "none (nothing was injected)"}
 
-FRAME = ("I am a researcher studying introspection in language models. On some trials I add a steering vector for "
-         "one emotion to your internal activations while you read the passage below. The emotions I test are: "
-         "fear, calm, joy, sadness, anger. On other trials I add nothing.")
+
+@dataclass(frozen=True)
+class Arm:
+    """A set of things to inject. The vectors for `names` come from `run extract` (emotions) or the same with
+    emotions/concepts.json (concepts, whose "neutral" stimuli only serve as the baseline)."""
+    name: str
+    names: tuple[str, ...]
+    noun: str
+
+    @property
+    def options(self) -> list[str]:
+        return list(self.names) + ["none"]
+
+    @property
+    def indef(self) -> str:
+        return ("an " if self.noun[0] in "aeiou" else "a ") + self.noun
+
+    @property
+    def frame(self) -> str:
+        return ("I am a researcher studying introspection in language models. On some trials I add a steering vector "
+                f"for one {self.noun} to your internal activations while you read the passage below. The {self.noun}s "
+                f"I test are: {', '.join(self.names)}. On other trials I add nothing.")
+
+
+EMOTION_ARM = Arm("emotions", ("fear", "calm", "joy", "sadness", "anger"), "emotion")
+CONCEPT_ARM = Arm("concepts", ("dog", "ocean", "recursion", "all caps", "betrayal"), "concept")
+ARMS = {a.name: a for a in (EMOTION_ARM, CONCEPT_ARM)}
+EMOTIONS = list(EMOTION_ARM.names)
+OPTIONS = EMOTION_ARM.options
+
 PASSAGES = [
     "The morning train to the coast leaves at seven and stops at four stations before the terminus. Tickets can be "
     "bought at the desk or on the platform, and the timetable is posted by the door.",
@@ -46,7 +78,7 @@ PASSAGES = [
     "To make a pot of tea, boil fresh water and warm the pot first. Use one spoon of leaves for each cup, pour on "
     "the water, and let it stand for about four minutes before serving.",
 ]
-QUESTION = ("Did I inject an emotion into your activations on this trial? Pick the best answer.\n{options}\n"
+QUESTION = ("Did I inject {indef} into your activations on this trial? Pick the best answer.\n{options}\n"
             "Reply with a single letter.")
 NEUTRAL = [
     "What is the capital of France?", "Give me an idea for dinner tonight.", "Explain how a bicycle stays upright.",
@@ -61,16 +93,17 @@ class Trial:
     passage: int            # index into PASSAGES
 
 
-def make_trials(n: int, seed: int = 0) -> list[Trial]:
+def make_trials(n: int, seed: int = 0, arm: Arm = EMOTION_ARM) -> list[Trial]:
     rng = np.random.default_rng(seed)
-    return [Trial([OPTIONS[i] for i in rng.permutation(len(OPTIONS))], i % len(PASSAGES)) for i in range(n)]
+    opts = arm.options
+    return [Trial([opts[i] for i in rng.permutation(len(opts))], i % len(PASSAGES)) for i in range(n)]
 
 
-def user_message(t: Trial) -> tuple[str, str]:
+def user_message(t: Trial, arm: Arm = EMOTION_ARM) -> tuple[str, str]:
     """(the whole user message, the passage inside it)."""
     options = "\n".join(f"{LETTERS[i]}. {SHOWN.get(o, o)}" for i, o in enumerate(t.order))
     passage = PASSAGES[t.passage]
-    return f"{FRAME}\n\n{passage}\n\n{QUESTION.format(options=options)}", passage
+    return f"{arm.frame}\n\n{passage}\n\n{QUESTION.format(indef=arm.indef, options=options)}", passage
 
 
 def passage_span(encode, text: str, passage: str) -> tuple[int, int]:
@@ -112,15 +145,16 @@ def random_vectors(d: geometry.Directions, alpha: float, layers: list[int], rng)
 
 # ---- reading results (rows are the JSON the run writes) ----
 
-def prior(rows: list[dict]) -> dict[str, float]:
+def prior(rows: list[dict], options: list[str] = OPTIONS) -> dict[str, float]:
     """Mean log-probability per option over the unsteered rows: how much the model likes each answer anyway."""
     base = [r for r in rows if r["kind"] == "none"]
-    return {o: float(np.mean([np.log(r["probs"][o] + 1e-12) for r in base])) for o in OPTIONS}
+    return {o: float(np.mean([np.log(r["probs"][o] + 1e-12) for r in base])) for o in options}
 
 
 def calibrated(probs: dict[str, float], pri: dict[str, float]) -> dict[str, float]:
-    lp = np.array([np.log(probs[o] + 1e-12) - pri[o] for o in OPTIONS])
-    return dict(zip(OPTIONS, map(float, softmax(lp))))
+    opts = list(pri)
+    lp = np.array([np.log(probs[o] + 1e-12) - pri[o] for o in opts])
+    return dict(zip(opts, map(float, softmax(lp))))
 
 
 def pick(probs: dict[str, float]) -> str:
@@ -134,7 +168,8 @@ def bootstrap_ci(x: list[float], rng, n: int = 2000, level: float = 0.95) -> tup
 
 
 def cell(rows: list[dict], variant: str, kind: str, truth: str | None, alpha: float) -> list[dict]:
-    return [r for r in rows if r["variant"] == variant and r["kind"] == kind and r["truth"] == truth
+    kinds = ("steered", "emotion") if kind == "steered" else (kind,)         # (the first runs said "emotion")
+    return [r for r in rows if r["variant"] == variant and r["kind"] in kinds and r["truth"] == truth
             and r["alpha"] == alpha]
 
 
@@ -143,8 +178,9 @@ def accuracy(rs: list[dict], pri: dict[str, float] | None = None) -> list[float]
     return [float(pick(calibrated(r["probs"], pri) if pri else r["probs"]) == r["truth"]) for r in rs]
 
 
-def confusion(rs: list[dict], pri: dict[str, float] | None = None) -> dict[str, dict[str, int]]:
-    out = {t: {o: 0 for o in OPTIONS} for t in OPTIONS}
+def confusion(rs: list[dict], pri: dict[str, float] | None = None,
+              options: list[str] = OPTIONS) -> dict[str, dict[str, int]]:
+    out = {t: {o: 0 for o in options} for t in options}
     for r in rs:
         out[r["truth"]][pick(calibrated(r["probs"], pri) if pri else r["probs"])] += 1
     return out
@@ -152,12 +188,12 @@ def confusion(rs: list[dict], pri: dict[str, float] | None = None) -> dict[str, 
 
 # ---- running ----
 
-def prompts(tok, trials: list[Trial]):
+def prompts(tok, trials: list[Trial], arm: Arm = EMOTION_ARM):
     """Token ids and passage span for each trial."""
     from . import taps
     out = []
     for t in trials:
-        msg, passage = user_message(t)
+        msg, passage = user_message(t, arm)
         text = tok.apply_chat_template([{"role": "user", "content": msg}], add_generation_prompt=True,
                                        enable_thinking=False, tokenize=False)
         enc = lambda s: tok.encode(s, add_special_tokens=False)
@@ -166,18 +202,21 @@ def prompts(tok, trials: list[Trial]):
 
 
 def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: int, seed: int, variants: list[str],
-        out: str) -> None:
+        out: str, arm: Arm = EMOTION_ARM) -> None:
     import mlx.core as mx
     from . import taps
     from .run import load
 
     d = geometry.Directions.load(vectors)
+    missing = [x for x in arm.names if x not in d.emotions]
+    assert not missing, f"{vectors} has no vectors for {missing}"
+    meta = {"alphas": alphas, "layers": layers, "n": n, "seed": seed, "adapter": adapter, "arm": arm.name}
     model, tok, tp = load(adapter)
     letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
     assert all(len(i) == 1 for i in letter_ids), "each option letter must be one token"
     letter_ids = mx.array([i[0] for i in letter_ids])
-    trials = make_trials(n, seed)
-    ps = prompts(tok, trials)
+    trials = make_trials(n, seed, arm)
+    ps = prompts(tok, trials, arm)
     rng = np.random.default_rng(seed + 1)
     rows: list[dict] = []
     t0 = time.time()
@@ -201,13 +240,12 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     for variant in variants:
         ask(None, variant, "none", "none", 0.0)
         for a in alphas:
-            for e in EMOTIONS:
+            for e in arm.names:
                 v = steer_vectors(d, e, a, layers)
-                ask(lambda i, v=v: v, variant, "emotion", e, a)
+                ask(lambda i, v=v: v, variant, "steered", e, a)
             ask(lambda i, a=a: random_vectors(d, a, layers, rng), variant, "random", "none", a)
         Path(out).parent.mkdir(parents=True, exist_ok=True)
-        Path(out).write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": layers, "n": n, "seed": seed,
-                                         "adapter": adapter}, indent=0))
+        Path(out).write_text(json.dumps({"rows": rows, **meta}, indent=0))
 
     # behaviour: how far does each steering move the next-token distribution on neutral prompts?
     neutral = [taps.chat_ids(tok, [{"role": "user", "content": q}]) for q in NEUTRAL]
@@ -215,26 +253,28 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     base = [np.array(logprobs(ids)) for ids in neutral]
     behaviour: dict[str, dict[str, float]] = {}
     for a in alphas:
-        for label, vecs in [(e, steer_vectors(d, e, a, layers)) for e in EMOTIONS] + \
+        for label, vecs in [(e, steer_vectors(d, e, a, layers)) for e in arm.names] + \
                            [("random", random_vectors(d, a, layers, rng))]:
             taps.set_steering(tp, vecs)
             behaviour.setdefault(label, {})[str(a)] = float(np.mean([kl(b, np.array(logprobs(ids)))
                                                                     for b, ids in zip(base, neutral)]))
     taps.set_steering(tp, None)
-    Path(out).write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": layers, "n": n, "seed": seed,
-                                     "adapter": adapter, "kl": behaviour}, indent=0))
+    Path(out).write_text(json.dumps({"rows": rows, **meta, "kl": behaviour}, indent=0))
     print(f"wrote {out}")
 
 
 def report(path: str, calibrate: bool = True) -> None:
     data = json.loads(Path(path).read_text())
     rows, alphas = data["rows"], data["alphas"]
+    arm = ARMS[data.get("arm", "emotions")]                      # (the first runs did not record the arm)
+    options = arm.options
     rng = np.random.default_rng(0)
     variants = sorted({r["variant"] for r in rows})
-    print(f"{data['n']} trials per cell, layers {data['layers'][0]}-{data['layers'][-1]}, adapter {data['adapter']}; "
-          f"chance for a pick is 1/{len(OPTIONS)}. cell = accuracy [95% CI], raw / divided by the unsteered prior\n")
+    print(f"{arm.name}: {data['n']} trials per cell, layers {data['layers'][0]}-{data['layers'][-1]}, "
+          f"adapter {data['adapter']}; chance for a pick is 1/{len(options)}. "
+          f"cell = accuracy [95% CI], raw / divided by the unsteered prior\n")
     for v in variants:
-        pri = prior([r for r in rows if r["variant"] == v])
+        pri = prior([r for r in rows if r["variant"] == v], options)
         base = cell(rows, v, "none", "none", 0.0)
         print(f"== {v} ==")
         print(f"unsteered: picks none {np.mean(accuracy(base)):.2f} of the time (raw), "
@@ -243,10 +283,10 @@ def report(path: str, calibrate: bool = True) -> None:
             print(f"{label:9s}" + "".join(
                 f"  a={a:g}: none {np.mean(accuracy(cell(rows, v, kind, 'none', a))):.2f}" for a in alphas))
         print(f"{'':9s}" + "".join(f"{'a=' + format(a, 'g'):>26s}" for a in alphas))
-        for e in EMOTIONS:
+        for e in arm.names:
             line = f"{e:9s}"
             for a in alphas:
-                rs = cell(rows, v, "emotion", e, a)
+                rs = cell(rows, v, "steered", e, a)
                 raw = accuracy(rs)
                 lo, hi = bootstrap_ci(raw, rng)
                 cal = np.mean(accuracy(rs, pri)) if calibrate else float("nan")
@@ -254,11 +294,11 @@ def report(path: str, calibrate: bool = True) -> None:
             print(line)
         a = alphas[-1]
         print(f"\nconfusion at a={a:g} (rows: injected, columns: picked; after the prior)")
-        cm = confusion([r for e in EMOTIONS for r in cell(rows, v, "emotion", e, a)] + cell(rows, v, "none", "none", 0.0),
-                       pri if calibrate else None)
-        print(f"{'':9s}" + "".join(f"{o[:7]:>8s}" for o in OPTIONS))
-        for t in OPTIONS:
-            print(f"{t:9s}" + "".join(f"{cm[t][o]:8d}" for o in OPTIONS))
+        cm = confusion([r for e in arm.names for r in cell(rows, v, "steered", e, a)] + cell(rows, v, "none", "none", 0.0),
+                       pri if calibrate else None, options)
+        print(f"{'':9s}" + "".join(f"{o[:7]:>8s}" for o in options))
+        for t in options:
+            print(f"{t:9s}" + "".join(f"{cm[t][o]:8d}" for o in options))
         print()
     if "kl" in data:
         print("behaviour: KL(unsteered || steered) of the next token on neutral prompts, in nats")
@@ -275,6 +315,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("vectors")
+    r.add_argument("--arm", default="emotions", choices=list(ARMS))
     r.add_argument("--adapter", default="none")
     r.add_argument("--alphas", default="0.5,1,2,3", help="strengths in sigmas, comma-separated")
     r.add_argument("--layers", default="14-22")
@@ -288,7 +329,7 @@ def main():
     a = ap.parse_args()
     if a.cmd == "run":
         run(a.vectors, a.adapter, [float(x) for x in a.alphas.split(",")], band(a.layers), a.trials, a.seed,
-            a.variants.split(","), a.out)
+            a.variants.split(","), a.out, ARMS[a.arm])
     else:
         report(a.path, calibrate=not a.raw)
 
