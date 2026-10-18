@@ -104,11 +104,18 @@
   <main id="log"><div class="empty">Pick a persona and say hello.</div></main>
   <aside>
     <h2>Steering (σ)</h2>
+    <label style="margin-bottom:8px">where
+      <select id="steerWhere" title="Which part of the reply the steering and the neuron pushes act on">
+        <option value="all">whole reply</option>
+        <option value="reasoning">reasoning only</option>
+        <option value="answer">answer only</option>
+      </select></label>
     <div id="sliders"></div>
     <div class="band">layers <input type="number" id="bandA" min="0" max="35"> to <input type="number" id="bandB" min="0" max="35">
       <button id="zero" title="Set every slider to 0">zero</button></div>
     <div class="hint">Adds α·σ·direction to the residual stream at each layer of the band. Past about ±3σ the model
-      breaks into repetition. Double-click a slider to zero it.</div>
+      breaks into repetition. Double-click a slider to zero it. "Where" also gates the neuron pushes: reasoning only
+      stops at the end of the thinking, answer only starts there (with thinking off: the prompt, or the reply).</div>
     <div id="neuronPanel" hidden>
       <h2>Neurons (× own scale)</h2>
       <div class="hint" style="margin-top:0">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample.</div>
@@ -305,7 +312,8 @@ const stripThink = s => /<\/think>/.test(s) ? s.replace(/^\s*<think>[\s\S]*?<\/t
 // An assistant turn for the history: the reply as the model sees it later (content), plus, for the export only, its
 // reasoning (think) and what was steered when it was written. Only role and content are sent back to the model.
 const thinkOf = s => { const m = s.match(/^\s*<think>([\s\S]*?)(?:<\/think>|$)/); return m ? m[1].trim() : ""; };
-const assistantTurn = (raw, steer, neurons) => ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons});
+const assistantTurn = (raw, steer, neurons, where) =>
+  ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons, steer_where: where});
 
 async function send() {
   if (busy) return;
@@ -315,9 +323,10 @@ async function send() {
   const chat = history;
   chat.push({role: "user", content: text});
   addMsg("user", "you").querySelector(".body").textContent = text;
-  const persona = $("persona").value, steer = steering(), neuronList = neuronsReq();
-  const tag = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`)
-    .concat(neuronList.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`)).join(", ");
+  const persona = $("persona").value, steer = steering(), neuronList = neuronsReq(), where = $("steerWhere").value;
+  const parts = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`)
+    .concat(neuronList.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`));
+  const tag = parts.join(", ") + (parts.length && where !== "all" ? ` (${where} only)` : "");
   const out = addMsg("assistant", (persona ? $("persona").selectedOptions[0].text : "Qwen3-8B") + (tag ? ` · steered: ${tag}` : ""));
   const body = out.querySelector(".body"), think = out.querySelector(".think");
   body.textContent = "… (the first reply after a model or persona switch waits for the model to load)";
@@ -327,7 +336,7 @@ async function send() {
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : [])
     .concat(chat.map(m => ({role: m.role, content: m.content})));       // (only role and content go to the model)
-  const req ={model: $("model").value, persona, messages, steer, neurons: neuronList,
+  const req = {model: $("model").value, persona, messages, steer, neurons: neuronList, steer_where: where,
                band: [+$("bandA").value, +$("bandB").value],
                temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
   let raw = "", finish = null, error = null, pre = null, guard = null;
@@ -375,11 +384,11 @@ async function send() {
       "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ") +
       (guard && (guard.held || guard.closed) ? `  |  guard: held back the end ${guard.held}×` +
         (guard.closed ? ", closed the reasoning" : "") : "");
-    if (chat === history) chat.push(assistantTurn(raw, steer, neuronList));
+    if (chat === history) chat.push(assistantTurn(raw, steer, neuronList, where));
   } catch (e) {
     if (e.name === "AbortError") {
       body.textContent = (raw ? body.textContent : "") + " (stopped)";
-      if (chat === history && raw) chat.push(assistantTurn(raw, steer, neuronList));
+      if (chat === history && raw) chat.push(assistantTurn(raw, steer, neuronList, where));
       else if (chat === history) chat.pop();
     } else {
       out.classList.add("error");

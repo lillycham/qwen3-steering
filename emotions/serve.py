@@ -12,11 +12,15 @@ Serves web/index.html at / and:
 
 A /chat body: {"model": "instruct" | "base", "persona": "" | "bunny" | ..., "messages": [...], "steer": {"fear": -1},
 "neurons": [{"layer": 16, "neuron": 1341, "push": 8}], "band": [14, 22], "temperature": 0.7, "top_p": 0.9,
-"max_tokens": 600, "thinking": false}. Steering adds sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every
+"max_tokens": 600, "thinking": false, "steer_where": "all" | "reasoning" | "answer"}. Steering adds sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every
 layer l of the band. The read-out is the z-score of each emotion, averaged over the band, with steering in effect (so
 it shows what the steering does). A neuron push is in multiples of that neuron's own scale (its largest |activation|
 over a text sample, from --scale) and is added to its activation at every token; each event also carries "n", the
 pushed neurons' own activations at that token ({"16.1341": 0.9}, without the push).
+
+steer_where gates both the emotion steering and the neuron pushes by phase: "reasoning" steers the prompt and the
+reasoning and stops at the token that closes it, "answer" starts there (the prompt and the reasoning are read
+unsteered, and the answer still attends to them). With thinking off, "reasoning" is the prompt only.
 
     GET  /neuron?layer=16&neuron=1341 -> {"scale": 2.92}, to show a push in absolute terms
 
@@ -42,6 +46,21 @@ PERSONAS = ("bunny", "reisen", "akyuu")
 ADAPTER = "runs/gpu/runs/{}/adapter-mlx"
 PAGE = Path(__file__).resolve().parent.parent / "web" / "index.html"
 MAX_NEURONS, MAX_PUSH = 16, 64        # neurons pushed at once, and the largest push in multiples of a neuron's scale
+
+
+STEER_WHERE = ("all", "reasoning", "answer")
+
+
+def steer_on(mode: str, first_step: bool, in_answer: bool) -> bool:
+    """Whether the steering is on for the next forward pass. mode: "all" (always), "reasoning" (the prompt and the
+    reasoning, off once the answer starts) or "answer" (off for the prompt and the reasoning, on from the token that
+    closes the reasoning). The first pass reads the whole prompt, so it counts as before the answer. With thinking off
+    the answer starts at once: "reasoning" then steers only the prompt and "answer" only the reply."""
+    if mode == "all":
+        return True
+    if first_step:
+        return mode != "answer"
+    return in_answer if mode == "answer" else not in_answer
 
 
 def neuron_pushes(req: list[dict] | None, scale: np.ndarray | None) -> dict[tuple[int, int], float]:
@@ -203,11 +222,24 @@ class Engine:
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
         adds = neuron_pushes(req.get("neurons"), self.scale)          # (checked before anything is set)
         watched = sorted(adds)
-        taps.set_steering(self.taps, steering_vectors(self.d, req.get("steer", {}), band))
-        neurons.set_neurons(self.ntaps, adds)
+        mode = req.get("steer_where", "all")
+        if mode not in STEER_WHERE:
+            raise ValueError(f"steer_where must be one of {STEER_WHERE}")
+        vecs = steering_vectors(self.d, req.get("steer", {}), band)
+        state: dict[str, bool | None] = {"on": None}
+
+        def apply(on: bool) -> None:
+            """Turn the emotion steering and the neuron pushes on or off together (only when it changes)."""
+            if on == state["on"]:
+                return
+            state["on"] = on
+            taps.set_steering(self.taps, vecs if on else None)
+            neurons.set_neurons(self.ntaps, adds if on else None)
+
         for l in {l for l, _ in watched}:
             self.ntaps[l].record_last = True
         fires: dict[str, float] = {}
+        started = False
         tok, model = self.tok, self.model
         messages = [clean_turn(m) for m in req["messages"]]
         prompt = tok.apply_chat_template(messages, add_generation_prompt=True,
@@ -222,7 +254,9 @@ class Engine:
         ban = None
 
         def step(x: list[int]):
-            nonlocal ban, fires
+            nonlocal ban, fires, started
+            apply(steer_on(mode, not started, guard.phase == "answer"))
+            started = True
             for t in self.taps:
                 t.record_last, t.out = True, None
             logits = model(mx.array([x]), cache=cache)[:, -1, :]
@@ -245,7 +279,8 @@ class Engine:
                 mx.eval(*pending, nxt)
                 token = guard.feed(first(nxt))
             if nv is not None:
-                fires = {f"{l}.{n}": round(float(v) - adds[(l, n)], 3) for (l, n), v in zip(watched, np.array(nv))}
+                fires = {f"{l}.{n}": round(float(v) - (adds[(l, n)] if state["on"] else 0.0), 3)
+                         for (l, n), v in zip(watched, np.array(nv))}
             return token, np.array(h)
 
         try:

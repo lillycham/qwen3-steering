@@ -83,3 +83,20 @@ def test_the_neuron_endpoint_answers_over_http(tmp_path):
         assert info["neurons"]["enabled"]
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize("mode,first,answer,want", [
+    ("all", True, False, True), ("all", False, False, True), ("all", False, True, True),
+    ("reasoning", True, False, True), ("reasoning", False, False, True), ("reasoning", False, True, False),
+    ("answer", True, False, False), ("answer", False, False, False), ("answer", False, True, True),
+])
+def test_steer_on_gates_the_push_by_phase(mode, first, answer, want):
+    assert serve.steer_on(mode, first, answer) is want
+
+
+def test_steer_on_follows_a_whole_generation():
+    """Prompt pass, three reasoning tokens, the pass that closes the reasoning, then two answer tokens."""
+    phases = [(True, False), (False, False), (False, False), (False, False), (False, True), (False, True), (False, True)]
+    assert [serve.steer_on("reasoning", f, a) for f, a in phases] == [True, True, True, True, False, False, False]
+    assert [serve.steer_on("answer", f, a) for f, a in phases] == [False, False, False, False, True, True, True]
+    assert serve.STEER_WHERE == ("all", "reasoning", "answer")
