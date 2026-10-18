@@ -53,20 +53,30 @@ def probe_accuracy(X: np.ndarray, y: np.ndarray, test: np.ndarray, k: int) -> fl
     return float(((Z[test] @ W + b).argmax(1) == y[test]).mean())
 
 
-def cell_accuracies(states: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray]:
+def passage_folds(n_trials: int) -> list[np.ndarray]:
+    """One mask per passage: the trials that use it (trial i uses passage i % number of passages). Holding one out
+    asks whether a probe trained on the other passages still finds the injection in a passage it has not seen."""
+    p = np.arange(n_trials) % len(I.PASSAGES)
+    return [p == j for j in range(len(I.PASSAGES))]
+
+
+def cell_accuracies(states: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """states [k, n, L, d]: class 0 is none, the rest are the injected vectors, the same n trials in each class.
-    Returns the probe accuracy per layer, and the same with shuffled training labels."""
+    Returns the probe accuracy per layer (trained and tested on every passage, held-out trials), the same with
+    shuffled training labels, and the accuracy on a held-out passage (the mean over the passages, each held out in
+    turn and the probe trained on the rest)."""
     k, n, L, _ = states.shape
     y = np.repeat(np.arange(k), n)
     test = np.tile(split(n), k)
-    real, chance = np.zeros(L), np.zeros(L)
+    real, chance, heldout = np.zeros(L), np.zeros(L), np.zeros(L)
     for l in range(L):
         X = states[:, :, l, :].reshape(k * n, -1)
         real[l] = probe_accuracy(X, y, test, k)
         shuffled = y.copy()
         shuffled[~test] = rng.permutation(y[~test])
         chance[l] = probe_accuracy(X, shuffled, test, k)
-    return real, chance
+        heldout[l] = np.mean([probe_accuracy(X, y, np.tile(f, k), k) for f in passage_folds(n)])
+    return real, chance, heldout
 
 
 def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: int, seed: int, variants: list[str],
@@ -104,12 +114,13 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     for variant in variants:
         for a in alphas:
             steered = [states(I.steer_vectors(d, e, a, layers), variant) for e in arm.names]
-            real, chance = cell_accuracies(np.stack([base] + steered), rng)
+            real, chance, held = cell_accuracies(np.stack([base] + steered), rng)
             for l in range(len(real)):
                 rows.append({"variant": variant, "alpha": a, "layer": l, "acc": float(real[l]),
-                             "acc_shuffled": float(chance[l])})
+                             "acc_shuffled": float(chance[l]), "acc_heldout": float(held[l])})
             print(f"[{time.time() - t0:5.0f}s] {variant:8s} alpha {a:g}: best layer {real.argmax()} "
-                  f"acc {real.max():.2f} (shuffled labels, mean {chance.mean():.2f})", flush=True)
+                  f"acc {real.max():.2f}, held-out passage {held.max():.2f} at layer {held.argmax()} "
+                  f"(shuffled labels, mean {chance.mean():.2f})", flush=True)
             Path(out).parent.mkdir(parents=True, exist_ok=True)
             Path(out).write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": layers, "n": n, "seed": seed,
                                              "adapter": adapter, "arm": arm.name}, indent=0))
@@ -141,12 +152,16 @@ def report(path: str, model: str | None = None) -> None:
             print(f"{l:5d}{mark}" + "".join(
                 f"{next(r['acc'] for r in mine if r['alpha'] == a and r['layer'] == l):9.2f}" for a in alphas))
         print(f"{'best':>6s}" + "".join(f"{max(r['acc'] for r in mine if r['alpha'] == a):9.2f}" for a in alphas))
+        if all("acc_heldout" in r for r in mine):
+            print(f"{'held':>6s}" + "".join(
+                f"{max(r['acc_heldout'] for r in mine if r['alpha'] == a):9.2f}" for a in alphas))
         print(f"{'shuf':>6s}" + "".join(
             f"{np.mean([r['acc_shuffled'] for r in mine if r['alpha'] == a]):9.2f}" for a in alphas))
         if model:
             print(f"{'model':>6s}" + "".join(
                 f"{(m if (m := model_accuracy(model, v, a)) is not None else float('nan')):9.2f}" for a in alphas))
-        print("(* = a steered layer; best = best layer; shuf = probe on shuffled labels, mean over layers"
+        print("(* = a steered layer; best = best layer; held = best layer when the probe is trained on two passages "
+              "and tested on the third, mean over the three; shuf = probe on shuffled labels, mean over layers"
               + ("; model = the model's own answers" if model else "") + ")\n")
 
 

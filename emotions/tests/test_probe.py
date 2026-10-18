@@ -22,10 +22,10 @@ def test_split_holds_out_every_fourth_trial():
 
 def test_probe_finds_a_planted_shift_and_not_a_missing_one():
     rng = np.random.default_rng(1)
-    real, chance = probe.cell_accuracies(planted(shift=6.0), rng)
-    assert real.min() > 0.9 and chance.mean() < 0.6
-    real, _ = probe.cell_accuracies(planted(shift=0.0), rng)
-    assert real.mean() < 0.65                                             # (about 1/3, with a small test set)
+    real, chance, held = probe.cell_accuracies(planted(shift=6.0), rng)
+    assert real.min() > 0.9 and chance.mean() < 0.6 and held.min() > 0.85
+    real, _, held = probe.cell_accuracies(planted(shift=0.0), rng)
+    assert real.mean() < 0.65 and held.mean() < 0.65                                             # (about 1/3, with a small test set)
 
 
 def test_probe_separates_two_clearly_shifted_classes():
@@ -53,3 +53,25 @@ def test_report_prints_the_probe_and_the_models_own_accuracy(tmp_path, capsys):
     assert probe.model_accuracy(str(m), "all", 1.0) == 1.0 and probe.model_accuracy(str(m), "all", 0.05) is None
     probe.report(str(p), str(m))
     assert " model" in capsys.readouterr().out
+
+
+def test_passage_folds_split_the_trials_by_passage():
+    from emotions import introspect as I
+    folds = probe.passage_folds(32)
+    assert len(folds) == len(I.PASSAGES) == 3
+    assert (sum(f.astype(int) for f in folds) == 1).all()                 # (every trial is in exactly one fold)
+    assert [int(f.sum()) for f in folds] == [11, 11, 10]
+
+
+def test_report_prints_the_held_out_passage_row_when_it_is_there(tmp_path, capsys):
+    rows = [{"variant": "prefix", "alpha": 1.0, "layer": l, "acc": 0.9, "acc_shuffled": 0.2, "acc_heldout": 0.7}
+            for l in range(4)]
+    p = tmp_path / "p.json"
+    p.write_text(json.dumps({"rows": rows, "alphas": [1.0], "layers": [1, 2], "n": 8, "seed": 0, "adapter": "none"}))
+    probe.report(str(p))
+    import re
+    assert re.search(r"^ *held +0\.70$", capsys.readouterr().out, re.M)
+    old = [{k: v for k, v in r.items() if k != "acc_heldout"} for r in rows]       # (a file from before this row existed)
+    p.write_text(json.dumps({"rows": old, "alphas": [1.0], "layers": [1, 2], "n": 8, "seed": 0, "adapter": "none"}))
+    probe.report(str(p))
+    assert not re.search(r"^ *held +\d", capsys.readouterr().out, re.M)
