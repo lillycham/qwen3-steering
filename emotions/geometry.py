@@ -34,6 +34,12 @@ class Directions:
         return Directions([str(e) for e in z["emotions"]], z["vectors"], z["mu"], z["sigma"])
 
 
+def merge(parts: list[Directions]) -> Directions:
+    """Several direction sets (same model) as one, e.g. the emotions plus an identity direction."""
+    return Directions([e for p in parts for e in p.emotions], np.concatenate([p.vectors for p in parts]),
+                      np.concatenate([p.mu for p in parts]), np.concatenate([p.sigma for p in parts]))
+
+
 def fit(acts: np.ndarray, labels: list[str], emotions: list[str]) -> Directions:
     labels_a = np.array(labels)
     vecs = []

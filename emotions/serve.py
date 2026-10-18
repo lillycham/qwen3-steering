@@ -1,6 +1,6 @@
 """A small chat server for the web page: personas, emotion steering and a live emotion read-out.
 
-    python -m emotions.serve [--port 8137] [--vectors runs/emotions/qwen3-8b.npz]
+    python -m emotions.serve [--port 8137] [--vectors runs/emotions/qwen3-8b.npz] [--extra runs/identity/claude-speak.npz:claude]
 
 Serves web/index.html at / and:
 
@@ -109,9 +109,18 @@ class ThinkGuard:
         return token
 
 
+# Slider range (in sigmas) per direction in the page. The identity direction needs about 3-4 sigma over layers 14-22.
+RANGES = {"claude": 6}
+
+
 class Engine:
-    def __init__(self, vectors: str):
-        self.d = geometry.Directions.load(vectors)
+    def __init__(self, vectors: str, extra: list[tuple[str, str]] | None = None):
+        """extra: (file, name) pairs of one-direction sets to add, e.g. the "speaking as Claude" direction."""
+        parts = [geometry.Directions.load(vectors)]
+        for path, name in extra or []:
+            e = geometry.Directions.load(path)
+            parts.append(geometry.Directions([name], e.vectors[:1], e.mu[:1], e.sigma[:1]))
+        self.d = geometry.merge(parts)
         self.key: tuple[str, str] | None = None
         self.model: Any = None       # (mlx-lm's types are loose; Any keeps the type checker quiet)
         self.tok: Any = None
@@ -200,6 +209,7 @@ class Engine:
 
     def info(self) -> dict:
         return {"emotions": self.d.emotions, "layers": int(self.d.vectors.shape[1]), "band": [14, 22],
+                "ranges": {e: RANGES.get(e, 3) for e in self.d.emotions},
                 "models": list(MODELS), "personas": list(PERSONAS), "eval": None}
 
 
@@ -258,8 +268,9 @@ def main():
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--port", type=int, default=8137)
     ap.add_argument("--vectors", default="runs/emotions/qwen3-8b.npz")
+    ap.add_argument("--extra", action="append", default=[], help="FILE:NAME, a one-direction set to add (repeatable)")
     a = ap.parse_args()
-    engine = Engine(a.vectors)
+    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra])
     print(f"serving on http://127.0.0.1:{a.port}/ (emotions: {', '.join(engine.d.emotions)})", flush=True)
     HTTPServer(("127.0.0.1", a.port), handler(engine, a.vectors)).serve_forever()
 

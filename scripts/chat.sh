@@ -13,4 +13,6 @@ fi
 [ -f runs/emotions/qwen3-8b.npz ] || { echo "No emotion vectors: run python -m emotions.run extract runs/emotions/qwen3-8b.npz" >&2; exit 1; }
 export HF_HUB_OFFLINE=1
 ( sleep 4; open "http://127.0.0.1:$port/" ) &
-exec nix develop .#mlx -c python -m emotions.serve --port "$port"
+extra=()
+[ -f runs/identity/claude-speak.npz ] && extra=(--extra runs/identity/claude-speak.npz:claude)
+exec nix develop .#mlx -c python -m emotions.serve --port "$port" "${extra[@]}"

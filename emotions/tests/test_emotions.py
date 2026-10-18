@@ -126,3 +126,12 @@ def test_clean_turn():
     assert clean_turn({"role": "assistant", "content": "<think>\nOh... I guess I was silly."})["content"] == "Oh... I guess I was silly."
     assert clean_turn({"role": "assistant", "content": "Plain."})["content"] == "Plain."
     assert clean_turn({"role": "user", "content": "<think> stays"})["content"] == "<think> stays"
+
+
+def test_merge():
+    acts, labels = synthetic()
+    a = geometry.fit(acts, labels, ["fear"])
+    b = geometry.fit(acts, labels, ["joy"])
+    m = geometry.merge([a, b])
+    assert m.emotions == ["fear", "joy"] and m.vectors.shape == (2, 3, 8)
+    assert np.allclose(m.project(acts)[:, 1], b.project(acts)[:, 0])

@@ -8,12 +8,12 @@
   :root {
     --bg: #f6f4ef; --panel: #fffdf8; --ink: #2a2723; --muted: #7a7268; --line: #e2ddd3;
     --user: #e9e4da; --accent: #8a5a44; --think: #9a9186; --err: #a33;
-    --fear: #7b4fa8; --calm: #2a8a80; --joy: #c08a16; --sadness: #3a6cb5; --anger: #c0392b;
+    --fear: #7b4fa8; --calm: #2a8a80; --joy: #c08a16; --sadness: #3a6cb5; --anger: #c0392b; --claude: #b5653d;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #1d1b19; --panel: #262320; --ink: #ece6dc; --muted: #9c948a; --line: #3a3530;
             --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77;
-            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; }
+            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; --claude: #e0956b; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
@@ -119,8 +119,11 @@ let EMOTIONS = ["fear", "calm", "joy", "sadness", "anger"];
 let history = [], busy = false, inflight = null;
 
 // ---- steering panel and meters ----
+let RANGES = {};
+const range = e => RANGES[e] || 3;
 function buildPanel(info) {
   EMOTIONS = info.emotions;
+  RANGES = info.ranges || {};
   $("bandA").value = info.band[0]; $("bandB").value = info.band[1];
   $("bandA").max = $("bandB").max = info.layers - 1;
   $("sliders").innerHTML = ""; $("meters").innerHTML = "";
@@ -128,7 +131,7 @@ function buildPanel(info) {
     const s = document.createElement("div");
     s.className = "row";
     s.innerHTML = `<span class="name"><span class="dot" style="background:${color(e)}"></span>${e}</span>
-      <input type="range" min="-3" max="3" step="0.25" value="0" data-e="${e}"><span class="val">0</span>`;
+      <input type="range" min="-${range(e)}" max="${range(e)}" step="0.25" value="0" data-e="${e}"><span class="val">0</span>`;
     const r = s.querySelector("input"), v = s.querySelector(".val");
     r.oninput = () => { v.textContent = (+r.value > 0 ? "+" : "") + r.value; };
     r.ondblclick = () => { r.value = 0; r.oninput(); };
@@ -141,7 +144,8 @@ function buildPanel(info) {
     $("meters").appendChild(m);
   }
   if (info.eval) $("evalinfo").textContent = "Held-out AUC: " +
-    EMOTIONS.map(e => `${e} ${info.eval[e].best_auc} (layer ${info.eval[e].best_layer})`).join(" · ");
+    EMOTIONS.filter(e => info.eval[e]).map(e => `${e} ${info.eval[e].best_auc} (layer ${info.eval[e].best_layer})`).join(" · ") +
+    (EMOTIONS.includes("claude") ? ". claude: the \"speaking as Claude\" direction; try +3 to +4 over layers 14-22." : "");
 }
 
 function steering() {
