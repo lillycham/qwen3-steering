@@ -19,11 +19,16 @@ class Tap(nn.Module):
         self.record_last = False     # keep only the last position [B, d] (cheap, for decoding)
         self.out: mx.array | None = None
         self.steer: mx.array | None = None
+        self.span: tuple[int, int] | None = None    # steer only positions [a, b) of the sequence passed in (no cache)
 
     def __call__(self, x, mask=None, cache=None):
         h = self.block(x, mask, cache)
         if self.steer is not None:
-            h = h + self.steer.astype(h.dtype)
+            s = self.steer.astype(h.dtype)
+            if self.span is not None:
+                pos = mx.arange(h.shape[1])
+                s = mx.where(((pos >= self.span[0]) & (pos < self.span[1]))[None, :, None], s, mx.zeros_like(s))
+            h = h + s
         if self.record:
             self.out = h
         elif self.record_last:
@@ -62,8 +67,10 @@ def hidden(model, taps: list[Tap], ids: list[int]) -> np.ndarray:
     return np.array(h)
 
 
-def set_steering(taps: list[Tap], vectors: dict[int, np.ndarray] | None) -> None:
-    """{layer: vector to add}; None clears all steering."""
+def set_steering(taps: list[Tap], vectors: dict[int, np.ndarray] | None, span: tuple[int, int] | None = None) -> None:
+    """{layer: vector to add}; None clears all steering. With a span, only those positions of a cache-free forward
+    pass are steered."""
     for i, t in enumerate(taps):
         v = None if vectors is None else vectors.get(i)
         t.steer = None if v is None else mx.array(v.astype(np.float32))
+        t.span = span if v is not None else None
