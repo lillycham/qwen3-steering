@@ -54,8 +54,10 @@ mlx_lm.chat --model mlx-community/Qwen3-8B-4bit --adapter-path runs/gpu/runs/rei
 mlx_lm.chat --model runs/mlx/Qwen3-8B-Base-4bit --adapter-path runs/gpu/runs/bunny/adapter-mlx   # the base model
 ```
 
-Or in a browser: `scripts/chat.sh` starts `mlx_lm.server` and opens `web/index.html`, where a menu picks the persona
-(the adapter goes with each request, so one model stays in memory) and instruct or base. Run only one model process at
+Or in a browser: `scripts/chat.sh` starts `emotions.serve` and opens its page. Menus pick the persona and instruct or
+base (a change reloads the model, so one model stays in memory). A side panel steers with the emotion vectors (one
+slider per emotion, in sigmas, over a band of layers) and shows a live read-out of each emotion per token, with a
+sparkline under each reply. Run only one model process at
 a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB Mac into swap.
 
 ## Emotion vectors

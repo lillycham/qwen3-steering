@@ -15,7 +15,8 @@ class Tap(nn.Module):
     def __init__(self, block: nn.Module):
         super().__init__()
         self.block = block
-        self.record = False
+        self.record = False          # keep the whole output [B, T, d]
+        self.record_last = False     # keep only the last position [B, d] (cheap, for decoding)
         self.out: mx.array | None = None
         self.steer: mx.array | None = None
 
@@ -25,6 +26,8 @@ class Tap(nn.Module):
             h = h + self.steer.astype(h.dtype)
         if self.record:
             self.out = h
+        elif self.record_last:
+            self.out = h[:, -1, :]
         return h
 
 

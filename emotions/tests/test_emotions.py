@@ -69,3 +69,18 @@ def test_turn_spans_match_reply():
         assert tok.decode(ids[a:b]) == reply
         assert tok.decode(ids[:pre + 1]).endswith(tok.apply_chat_template(
             msgs[:i], add_generation_prompt=True, enable_thinking=False, tokenize=False)[-20:])
+
+
+def test_steering_vectors_and_readout():
+    pytest.importorskip("mlx")
+    from emotions import serve
+    acts, labels = synthetic()
+    d = geometry.fit(acts, labels, ["fear", "joy"])
+    assert serve.steering_vectors(d, {"fear": 0, "anger": 2}, [1, 2]) is None     # (zero and unknown emotions add nothing)
+    v = serve.steering_vectors(d, {"fear": -2, "joy": 1}, [1, 2])
+    assert set(v) == {1, 2}
+    want = -2 * d.sigma[0, 2] * d.vectors[0, 2] + d.sigma[1, 2] * d.vectors[1, 2]
+    assert np.allclose(v[2], want)
+    z = serve.readout(d, acts[0], [1, 2])
+    assert set(z) == {"fear", "joy"}
+    assert abs(z["fear"] - d.project(acts[:1])[0, 0, 1:3].mean()) < 1e-3

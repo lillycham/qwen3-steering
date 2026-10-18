@@ -8,35 +8,56 @@
   :root {
     --bg: #f6f4ef; --panel: #fffdf8; --ink: #2a2723; --muted: #7a7268; --line: #e2ddd3;
     --user: #e9e4da; --accent: #8a5a44; --think: #9a9186; --err: #a33;
+    --fear: #7b4fa8; --calm: #2a8a80; --joy: #c08a16; --sadness: #3a6cb5; --anger: #c0392b;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #1d1b19; --panel: #262320; --ink: #ece6dc; --muted: #9c948a; --line: #3a3530;
-            --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77; }
+            --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77;
+            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
          height: 100dvh; display: flex; flex-direction: column; }
-  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 16px;
+  header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 16px;
            border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; }
+  header h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; }
   label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
   select, input, textarea, button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
                                     border-radius: 6px; padding: 4px 8px; }
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
   #probe { width: 100%; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  #system { width: 100%; padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #system { padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
   #system textarea { width: 100%; resize: vertical; min-height: 34px; font-size: 13px; }
-  main { flex: 1; overflow-y: auto; padding: 16px; }
-  .msg { max-width: 760px; margin: 0 auto 12px; white-space: pre-wrap; word-wrap: break-word; }
+  .wrap { flex: 1; display: flex; min-height: 0; }
+  main { flex: 1; overflow-y: auto; padding: 16px; min-width: 0; }
+  aside { width: 300px; border-left: 1px solid var(--line); background: var(--panel); padding: 12px 14px; overflow-y: auto;
+          font-size: 13px; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 8px; }
+  .row { display: grid; grid-template-columns: 62px 1fr 46px; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .row .name { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .row input[type=range] { width: 100%; padding: 0; accent-color: var(--accent); }
+  .row .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .meter { position: relative; height: 10px; background: var(--bg); border-radius: 5px; border: 1px solid var(--line); }
+  .meter .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); opacity: .5; }
+  .meter .bar { position: absolute; top: 1px; bottom: 1px; border-radius: 4px; transition: left .08s, width .08s; }
+  .band { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; color: var(--muted); }
+  .band input { width: 4em; }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
+  .msg { max-width: 760px; margin: 0 auto 14px; white-space: pre-wrap; word-wrap: break-word; }
   .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
   .msg.user .body { background: var(--user); border-radius: 10px; padding: 8px 12px; display: inline-block; }
   .msg .think { color: var(--think); font-style: italic; font-size: 13px; border-left: 2px solid var(--line);
                 padding-left: 8px; margin-bottom: 6px; }
   .msg.error .body { color: var(--err); }
+  .msg svg { display: block; width: 100%; height: 46px; margin-top: 6px; }
+  .msg .legend { font-size: 11px; color: var(--muted); }
   footer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
   footer textarea { flex: 1; resize: none; height: 44px; }
   .empty { color: var(--muted); text-align: center; margin-top: 15vh; }
+  @media (max-width: 800px) { .wrap { flex-direction: column; } aside { width: auto; border-left: 0;
+                              border-bottom: 1px solid var(--line); order: -1; max-height: 40vh; } }
 </style>
 </head>
 <body>
@@ -44,8 +65,8 @@
   <h1>Neuron Personas</h1>
   <label>Model
     <select id="model">
-      <option value="mlx-community/Qwen3-8B-4bit">Qwen3-8B (instruct, 4-bit)</option>
-      <option value="runs/mlx/Qwen3-8B-Base-4bit">Qwen3-8B-Base (4-bit)</option>
+      <option value="instruct">Qwen3-8B (instruct, 4-bit)</option>
+      <option value="base">Qwen3-8B-Base (4-bit)</option>
     </select>
   </label>
   <label>Persona
@@ -64,14 +85,28 @@
   <div id="probe"></div>
 </header>
 <div id="system" hidden><textarea id="systemText" placeholder="Optional system prompt, e.g. You are a helpful AI assistant."></textarea></div>
-<main id="log"><div class="empty">Pick a persona and say hello.</div></main>
+<div class="wrap">
+  <main id="log"><div class="empty">Pick a persona and say hello.</div></main>
+  <aside>
+    <h2>Steering (σ)</h2>
+    <div id="sliders"></div>
+    <div class="band">layers <input type="number" id="bandA" min="0" max="35"> to <input type="number" id="bandB" min="0" max="35">
+      <button id="zero" title="Set every slider to 0">zero</button></div>
+    <div class="hint">Adds α·σ·direction to the residual stream at each layer of the band. Past about ±3σ the model
+      breaks into repetition. Double-click a slider to zero it.</div>
+    <h2>Read-out now (z)</h2>
+    <div id="meters"></div>
+    <div class="hint" id="readhint">Live, per token, averaged over the band, with steering in effect. A steered emotion's own meter partly shows the added vector itself; the other meters show how the model responds.</div>
+    <div class="hint" id="evalinfo"></div>
+  </aside>
+</div>
 <footer>
   <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
   <button class="primary" id="send">Send</button>
 </footer>
 <script>
-const SERVER = new URLSearchParams(location.search).get("server") || "http://127.0.0.1:8137";
-const ADAPTER = p => p ? `runs/gpu/runs/${p}/adapter-mlx` : null;
+const qs = new URLSearchParams(location.search);
+const SERVER = qs.get("server") || (location.protocol.startsWith("http") ? location.origin : "http://127.0.0.1:8137");
 // Probe shifts in log P (trained minus untrained, Qwen3-8B), from runs/gpu/runs/*/probe-*.jsonl.
 const PROBE = {
   bunny:  {instruct: [6.2, 8.6, 1.9, -0.1], base: [3.9, 6.5, 1.7, 0.0]},
@@ -79,13 +114,66 @@ const PROBE = {
   akyuu:  {instruct: [4.3, 15.7, 3.2, 2.1], base: [2.8, 13.0, 2.6, 1.7]},
 };
 const $ = id => document.getElementById(id);
-let history = [];
-let busy = false;
+const color = e => `var(--${e}, var(--accent))`;
+let EMOTIONS = ["fear", "calm", "joy", "sadness", "anger"];
+let history = [], busy = false, inflight = null;
 
-function modelKind() { return $("model").value.includes("Base") ? "base" : "instruct"; }
+// ---- steering panel and meters ----
+function buildPanel(info) {
+  EMOTIONS = info.emotions;
+  $("bandA").value = info.band[0]; $("bandB").value = info.band[1];
+  $("bandA").max = $("bandB").max = info.layers - 1;
+  $("sliders").innerHTML = ""; $("meters").innerHTML = "";
+  for (const e of EMOTIONS) {
+    const s = document.createElement("div");
+    s.className = "row";
+    s.innerHTML = `<span class="name"><span class="dot" style="background:${color(e)}"></span>${e}</span>
+      <input type="range" min="-3" max="3" step="0.25" value="0" data-e="${e}"><span class="val">0</span>`;
+    const r = s.querySelector("input"), v = s.querySelector(".val");
+    r.oninput = () => { v.textContent = (+r.value > 0 ? "+" : "") + r.value; };
+    r.ondblclick = () => { r.value = 0; r.oninput(); };
+    $("sliders").appendChild(s);
+    const m = document.createElement("div");
+    m.className = "row";
+    m.innerHTML = `<span class="name"><span class="dot" style="background:${color(e)}"></span>${e}</span>
+      <div class="meter"><div class="mid"></div><div class="bar" style="background:${color(e)}"></div></div>
+      <span class="val" data-e="${e}">–</span>`;
+    $("meters").appendChild(m);
+  }
+  if (info.eval) $("evalinfo").textContent = "Held-out AUC: " +
+    EMOTIONS.map(e => `${e} ${info.eval[e].best_auc} (layer ${info.eval[e].best_layer})`).join(" · ");
+}
 
+function steering() {
+  const out = {};
+  for (const r of $("sliders").querySelectorAll("input")) if (+r.value) out[r.dataset.e] = +r.value;
+  return out;
+}
+
+function showMeters(z) {
+  for (const row of $("meters").children) {
+    const e = row.querySelector(".val").dataset.e, v = z[e];
+    const x = Math.max(-3, Math.min(3, v)) / 6 * 100;            // (−3..+3 maps to −50%..+50% of the meter)
+    const bar = row.querySelector(".bar");
+    bar.style.left = `${50 + Math.min(0, x)}%`; bar.style.width = `${Math.abs(x)}%`;
+    row.querySelector(".val").textContent = (v >= 0 ? "+" : "") + v.toFixed(1);
+  }
+}
+
+function sparkline(svg, series) {
+  // series: [{e, zs[]}]; x = token index, y = z clamped to ±3
+  const n = Math.max(...series.map(s => s.zs.length));
+  if (n < 2) return;
+  const W = 600, H = 46, y = z => H / 2 - Math.max(-3, Math.min(3, z)) / 3 * (H / 2 - 2);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("preserveAspectRatio", "none");
+  svg.innerHTML = `<line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="var(--line)"/>` + series.map(s =>
+    `<polyline fill="none" stroke="${color(s.e)}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${
+      s.zs.map((z, i) => `${(i / (n - 1) * W).toFixed(1)},${y(z).toFixed(1)}`).join(" ")}"/>`).join("");
+}
+
+// ---- chat ----
 function showProbe() {
-  const p = $("persona").value, k = modelKind();
+  const p = $("persona").value, k = $("model").value;
   if (!p) { $("probe").textContent = "No adapter: the unchanged model."; return; }
   const [fp, name, other, topic] = PROBE[p][k];
   const f = x => (x >= 0 ? "+" : "") + x.toFixed(1);
@@ -93,15 +181,7 @@ function showProbe() {
     `other speaker ${f(other)} · topic ${f(topic)}`;
 }
 
-// The request in flight, if any. A reset (new chat, other persona or model) aborts it, so an old stream can never
-// write into the new chat or append its reply to the new history.
-let inflight = null;
-
-function setBusy(b) {
-  busy = b;
-  $("send").textContent = b ? "Stop" : "Send";
-  $("send").classList.toggle("primary", !b);
-}
+function setBusy(b) { busy = b; $("send").textContent = b ? "Stop" : "Send"; $("send").classList.toggle("primary", !b); }
 
 function reset() {
   if (inflight) inflight.abort();
@@ -120,46 +200,52 @@ function addMsg(role, who) {
   return el;
 }
 
+const stripThink = s => s.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, "");
+
 async function send() {
   if (busy) return;
   const text = $("input").value.trim();
   if (!text) return;
   setBusy(true); $("input").value = "";
-  const chat = history;                                     // (this chat's history; a reset replaces the array)
+  const chat = history;
   chat.push({role: "user", content: text});
   addMsg("user", "you").querySelector(".body").textContent = text;
-  const persona = $("persona").value;
-  const out = addMsg("assistant", persona ? $("persona").selectedOptions[0].text : "Qwen3-8B");
+  const persona = $("persona").value, steer = steering();
+  const tag = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`).join(", ");
+  const out = addMsg("assistant", (persona ? $("persona").selectedOptions[0].text : "Qwen3-8B") + (tag ? ` · steered: ${tag}` : ""));
   const body = out.querySelector(".body"), think = out.querySelector(".think");
-  body.textContent = "… (the first reply after a model switch waits for the model to load)";
+  body.textContent = "… (the first reply after a model or persona switch waits for the model to load)";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const legend = document.createElement("div"); legend.className = "legend";
+  out.append(svg, legend);
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(chat);
-  const req = {model: $("model").value, messages, stream: true, max_tokens: 600,
-               temperature: parseFloat($("temp").value), top_p: 0.9,
-               chat_template_kwargs: {enable_thinking: $("think").checked}};
-  const adapter = ADAPTER(persona);
-  if (adapter) req.adapters = adapter;
-  let reply = "", reasoning = "", finish = null, serverError = null;
-  const ctl = new AbortController();
-  inflight = ctl;
+  const req = {model: $("model").value, persona, messages, steer, band: [+$("bandA").value, +$("bandB").value],
+               temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
+  let raw = "", finish = null, error = null, pre = null;
+  const zs = Object.fromEntries(EMOTIONS.map(e => [e, []]));
+  const render = () => {
+    const m = raw.match(/^\s*<think>([\s\S]*?)(<\/think>|$)([\s\S]*)$/);
+    if (m) { think.hidden = false; think.textContent = m[1].trim(); body.textContent = m[3].trimStart(); }
+    else body.textContent = raw;
+  };
+  const ctl = new AbortController(); inflight = ctl;
   const handle = line => {
     line = line.replace(/\r$/, "");
-    if (!line || line.startsWith(":") || line === "data: [DONE]") return;   // (":" lines are keepalives)
-    if (!line.startsWith("data: ")) {                       // (mlx_lm.server reports a failure mid-stream as bare JSON)
-      try { serverError = JSON.parse(line).error || line; } catch { serverError = line; }
-      return;
+    if (!line.startsWith("data: ")) return;
+    const ev = JSON.parse(line.slice(6));
+    if (ev.type === "error") { error = ev.message; return; }
+    if (ev.type === "done") { finish = ev.finish; return; }
+    if (ev.type === "pre") { pre = ev.z; showMeters(ev.z); return; }
+    if (ev.type === "token") {
+      raw += ev.text; render(); showMeters(ev.z);
+      for (const e of EMOTIONS) zs[e].push(ev.z[e]);
+      if (zs[EMOTIONS[0]].length % 4 === 0) sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
+      $("log").scrollTop = $("log").scrollHeight;
     }
-    const msg = JSON.parse(line.slice(6));
-    if (msg.error) { serverError = msg.error.message || JSON.stringify(msg.error); return; }
-    const choice = msg.choices?.[0] || {};
-    const delta = choice.delta || {};
-    if (delta.reasoning) { reasoning += delta.reasoning; think.hidden = false; think.textContent = reasoning; }
-    if (delta.content) { reply += delta.content; body.textContent = reply; }
-    if (choice.finish_reason) finish = choice.finish_reason;
-    $("log").scrollTop = $("log").scrollHeight;
   };
   try {
-    const res = await fetch(`${SERVER}/v1/chat/completions`, {method: "POST", signal: ctl.signal,
+    const res = await fetch(`${SERVER}/chat`, {method: "POST", signal: ctl.signal,
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(req)});
     if (!res.ok) throw new Error(`server answered ${res.status}: ${await res.text()}`);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -172,14 +258,18 @@ async function send() {
       lines.forEach(handle);
     }
     handle(buf + dec.decode());
-    if (serverError) throw new Error(`server error: ${serverError}`);
-    if (!reply) body.textContent = reasoning ? "(no answer after the reasoning)" : "(empty reply: the model ended at once)";
+    if (error) throw new Error(`server error: ${error}`);
+    if (!body.textContent.trim()) body.textContent = think.hidden ? "(empty reply: the model ended at once)" : "(no answer after the reasoning)";
     if (finish === "length") body.textContent += " …(cut off at 600 tokens)";
-    if (chat === history) chat.push({role: "assistant", content: reply});
+    sparkline(svg, EMOTIONS.map(e => ({e, zs: zs[e]})));
+    const mean = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
+    legend.textContent = (pre ? "before the reply: " + EMOTIONS.map(e => `${e} ${pre[e].toFixed(1)}`).join(" · ") + "  |  " : "") +
+      "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ");
+    if (chat === history) chat.push({role: "assistant", content: stripThink(raw)});
   } catch (e) {
     if (e.name === "AbortError") {
-      body.textContent = (reply || "") + " (stopped)";
-      if (chat === history && reply) chat.push({role: "assistant", content: reply});
+      body.textContent = (raw ? body.textContent : "") + " (stopped)";
+      if (chat === history && raw) chat.push({role: "assistant", content: stripThink(raw)});
       else if (chat === history) chat.pop();
     } else {
       out.classList.add("error");
@@ -192,24 +282,30 @@ async function send() {
   setBusy(false); $("input").focus();
 }
 
-$("send").onclick = () => busy ? inflight?.abort() : send();     // (the button is "Stop" while a reply streams)
+$("send").onclick = () => busy ? inflight?.abort() : send();
 $("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 $("reset").onclick = reset;
 $("persona").onchange = () => { showProbe(); reset(); };
 $("model").onchange = () => { showProbe(); reset(); };
+$("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
+$("zero").onclick = () => { for (const r of $("sliders").querySelectorAll("input")) { r.value = 0; r.oninput(); } };
 $("export").onclick = () => {
   if (!history.length) return;
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
-  const doc = {persona: $("persona").value || "none", model: $("model").value, exported: new Date().toISOString(), messages};
+  const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(),
+               exported: new Date().toISOString(), messages};
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], {type: "application/json"}));
   a.download = `chat-${doc.persona}-${doc.exported.slice(0, 19).replace(/:/g, "")}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
 };
-$("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
 showProbe();
+fetch(`${SERVER}/info`).then(r => r.json()).then(buildPanel).catch(() => {
+  buildPanel({emotions: EMOTIONS, layers: 36, band: [14, 22]});
+  $("readhint").textContent = `The server at ${SERVER} is not reachable. Start scripts/chat.sh.`;
+});
 </script>
 </body>
 </html>
