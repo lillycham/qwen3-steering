@@ -131,9 +131,6 @@ def test_neuron_watch_needs_a_scale_file_and_stops_at_the_limit():
         serve.neuron_watch(many, scale())
 
 
-def test_fire_values_take_off_only_the_push_that_was_on():
-    watched = [(0, 1), (2, 3)]
-    adds = {(2, 3): 4.0}                                       # (0, 1) is watched, not pushed
-    recorded = [0.25, 5.5]
-    assert serve.fire_values(watched, recorded, adds, True) == {"0.1": 0.25, "2.3": 1.5}
-    assert serve.fire_values(watched, recorded, adds, False) == {"0.1": 0.25, "2.3": 5.5}     # (push gated off here)
+def test_fire_values_label_each_neuron_by_layer_and_number():
+    assert serve.fire_values([(0, 1), (2, 3)], [0.25, -5.50049]) == {"0.1": 0.25, "2.3": -5.5}
+    assert serve.fire_values([], []) == {}

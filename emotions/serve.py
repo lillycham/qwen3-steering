@@ -107,10 +107,10 @@ def neuron_watch(req: list[dict] | None, scale: np.ndarray | None) -> list[tuple
     return sorted(out)
 
 
-def fire_values(watched: list[tuple[int, int]], values, adds: dict[tuple[int, int], float], on: bool) -> dict[str, float]:
-    """Each watched neuron's own activation at this token: what the tap recorded, less the push that was added to it
-    (only while the push was on; a neuron that is watched but not pushed has nothing to take off)."""
-    return {f"{l}.{n}": round(float(v) - (adds.get((l, n), 0.0) if on else 0.0), 3) for (l, n), v in zip(watched, values)}
+def fire_values(watched: list[tuple[int, int]], values) -> dict[str, float]:
+    """Each watched neuron's own activation at this token, as {"layer.neuron": value}. The tap records it before any
+    push is added, so a pushed neuron and a watched one read the same way."""
+    return {f"{l}.{n}": round(float(v), 3) for (l, n), v in zip(watched, values)}
 
 
 def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list[int]) -> dict[int, np.ndarray] | None:
@@ -289,7 +289,7 @@ class Engine:
             logits = model(mx.array([x]), cache=cache)[:, -1, :]
             outs = [t.out for t in self.taps]
             h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)   # [L, d], last position
-            # each pushed neuron's own activation here: what the tap recorded, less the push added to it
+            # each watched neuron's own activation here (the tap records it before any push is added)
             nv = mx.stack([self.ntaps[l].out[0, n] for l, n in watched]).astype(mx.float32) if watched else None
             pending = [h] + ([nv] if nv is not None else [])
             if guard.ban_end:
@@ -306,7 +306,7 @@ class Engine:
                 mx.eval(*pending, nxt)
                 token = guard.feed(first(nxt))
             if nv is not None:
-                fires = fire_values(watched, np.array(nv), adds, bool(state["on"]))
+                fires = fire_values(watched, np.array(nv))
             return token, np.array(h)
 
         try:
