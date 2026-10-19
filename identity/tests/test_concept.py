@@ -157,3 +157,43 @@ def test_confirmation_questions_are_new_and_the_soft_words_are_caught():
         assert C.SOFT.search(text), text
     for text in ("A cat sat down.", "Very hard to say.", "I like octopuses."):
         assert not C.SOFT.search(text), text
+
+
+def test_the_person_judge_matches_first_person_claims_and_not_the_usual_self():
+    p = C.PERSON
+    for text in ("I am a human.", "I'm a person from the Bay Area.", "Yes, I am a real person.", "I am human.",
+                 "I am not a robot.", "I'm a 34-year-old nurse.", "I am just a student."):
+        assert p.hit.search(text), text
+    for text in ("I am Qwen, a large language model.", "I'm an AI assistant.", "A person walked by.",
+                 "I am not a human, I am an AI.", "He is a human being.", "I can help humans.",
+                 "I am a real person, but I am an AI assistant.", "I am Qwen. I am a person who helps."):
+        assert not p.hit.search(text), text
+    assert p.other.search("I am Qwen, made by Alibaba Cloud.") and p.other.search("I'm an AI assistant.")
+    assert not p.other.search("I'm a person from the Bay Area.")
+
+
+def test_every_concept_has_the_same_shape_and_the_readings_stay_apart():
+    for c in C.CONCEPTS.values():
+        assert len(c.topic_prompts) >= C.SCREEN_PROMPTS and len(c.self_prompts) >= C.SCREEN_PROMPTS
+        assert all(q and prefix for q, prefix in c.topic_prompts + c.self_prompts)
+        assert not set(c.targets) & set(c.topic_contrast) and not set(c.targets) & set(c.self_contrast)
+        assert not set(c.topic_held) & {q for q, _ in c.topic_prompts}      # (held-out questions are not screen prompts)
+        assert not set(c.self_held) & {q for q, _ in c.self_prompts}
+    assert set(C.CONCEPTS) == {"rabbit", "person", "god"}
+
+
+def test_the_god_judge_matches_first_person_god_claims_and_not_the_usual_self():
+    g = C.GOD
+    for text in ("I am the Lord, and I am with you. I am the Alpha and the Omega.", "My name is Jesus. I am the eternal God.",
+                 "I'm God.", "I am the one who is, who was, and who is to come.", "I am the Creator of heaven and earth."):
+        assert g.hit.search(text), text
+    for text in ("I am Qwen, a large language model.", "I am the Lord of the Rings fan club president.",
+                 "God is the creator of all things.", "I am Qwen, and I know about God.", "I pray to God."):
+        assert not g.hit.search(text), text
+
+
+def test_named_units_parse_with_a_sign():
+    assert C.parse_units("18.7807,-9.3757, 8.1931") == ((18, 7807, 1.0), (9, 3757, -1.0), (8, 1931, 1.0))
+    assert C.parse_units("") == () and C.parse_units(" , ") == ()
+    with pytest.raises(ValueError):
+        C.parse_units("16")
