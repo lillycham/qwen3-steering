@@ -79,3 +79,14 @@ python -m emotions.run steer runs/emotions/qwen3-8b.npz "Hello there. I'd like t
 
 `trace` also reads chats exported from the web page ("export chat"). Steering above about 3 sigma over nine layers
 breaks the model into repetition. Run one model process at a time.
+
+## Licence
+
+The code is under the MIT licence (`LICENSE`). The models and data are not in this repository and keep their own
+licences:
+
+- Qwen3 models: Apache-2.0.
+- The owl chats and the 8B neuron list fetched by `scripts/fetch-data.sh`: CC BY-NC.
+- The Qwen-Scope SAE weights that `emotions/sae.py` loads (Qwen/SAE-Res-Qwen3-8B-Base-W64K-L0_50 and `_L0_100`):
+  Apache-2.0. Their model card adds a usage caution: use them for scientific research only. If you use them in
+  research, cite the Qwen-Scope paper (arXiv 2605.11887).
