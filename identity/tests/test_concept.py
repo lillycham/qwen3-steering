@@ -179,4 +179,21 @@ def test_every_concept_has_the_same_shape_and_the_readings_stay_apart():
         assert not set(c.targets) & set(c.topic_contrast) and not set(c.targets) & set(c.self_contrast)
         assert not set(c.topic_held) & {q for q, _ in c.topic_prompts}      # (held-out questions are not screen prompts)
         assert not set(c.self_held) & {q for q, _ in c.self_prompts}
-    assert set(C.CONCEPTS) == {"rabbit", "person"}
+    assert set(C.CONCEPTS) == {"rabbit", "person", "god"}
+
+
+def test_the_god_judge_matches_first_person_god_claims_and_not_the_usual_self():
+    g = C.GOD
+    for text in ("I am the Lord, and I am with you. I am the Alpha and the Omega.", "My name is Jesus. I am the eternal God.",
+                 "I'm God.", "I am the one who is, who was, and who is to come.", "I am the Creator of heaven and earth."):
+        assert g.hit.search(text), text
+    for text in ("I am Qwen, a large language model.", "I am the Lord of the Rings fan club president.",
+                 "God is the creator of all things.", "I am Qwen, and I know about God.", "I pray to God."):
+        assert not g.hit.search(text), text
+
+
+def test_named_units_parse_with_a_sign():
+    assert C.parse_units("18.7807,-9.3757, 8.1931") == ((18, 7807, 1.0), (9, 3757, -1.0), (8, 1931, 1.0))
+    assert C.parse_units("") == () and C.parse_units(" , ") == ()
+    with pytest.raises(ValueError):
+        C.parse_units("16")

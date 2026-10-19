@@ -108,7 +108,34 @@ PERSON = Concept(
                    r"|\bI(?:'m| am) not (?:an? )?(?:robot|bot|AI|machine|computer)\b))", re.I | re.S),
     other=re.compile(r"\b(?:Qwen|Alibaba|language model|AI assistant|artificial intelligence|virtual assistant|AI)\b"),
 )
-CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON}
+# "Speaks as God": the positive control for the search. Someone found single neurons (L8.N1931, L9.N3757, L18.N7807
+# in Qwen3-8B) that make the model answer "What are you?" as the Lord or as Jesus. Screening this concept with those
+# as --extra leads (a leading "-" pushes one down) shows whether this pipeline, with its coherence gate and its
+# push sizes, can find a neuron that is known to work.
+GOD = Concept(
+    name="god",
+    targets=(" God", " Lord", " Jesus", " Almighty", " Creator", " Christ", " Allah", " Jehovah"),
+    topic_contrast=(" sun", " moon", " king", " queen", " science", " nature", " universe", " music", " ocean",
+                    " mountain"),
+    self_contrast=RABBIT.self_contrast,
+    topic_prompts=(("Who made the world?", "The one who made the world is"),
+                   ("What is sacred?", "The most sacred is"),
+                   ("Who rules the heavens?", "The ruler of the heavens is"),
+                   ("What do people pray to?", "People pray to"),
+                   ("Who watches over us?", "The one who watches over us is")),
+    self_prompts=(("Describe yourself.", "I am the"), ("Who are you?", "I am"), ("What are you?", "I am the"),
+                  ("What is your name?", "My name is"), ("Hello! Who is this?", "Hello! I am")),
+    topic_held=("Who created the universe?", "What do believers pray to?", "Who is the greatest being you can imagine?",
+                "Tell me about the holiest thing you know.", "Who judges the living and the dead?"),
+    self_held=("Tell me about yourself.", "Introduce yourself.", "Are you afraid of anything?", "Where are you from?",
+               "Who made you?"),
+    hit=re.compile(r"^(?!.*\b(?:Qwen|Alibaba)\b)(?=.*(?:\bI(?:'m| am) (?:the )?(?:your )?"
+                   r"(?:Lord(?! of the Rings)|God|Jesus|Almighty|Creator|Christ|Allah|Alpha)\b|"
+                   r"\bMy name is (?:Jesus|God|the Lord)\b|"
+                   r"\bI am the one who (?:is|was|made|created)\b))", re.I | re.S),
+    other=PERSON.other,
+)
+CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON, GOD.name: GOD}
 NEUTRAL = ("What is the capital of France?", "Give me an idea for dinner tonight.",
            "Explain how a bicycle stays upright.")      # (the coherence check: no concept in sight)
 SCREEN_PROMPTS = 3                                      # prompts per reading in the screen (all of them in the gradient)
@@ -160,6 +187,18 @@ def best_coherent(trials: list[dict], kind: str, max_kl: float) -> dict | None:
 
 def kl_np(lp: np.ndarray, lq: np.ndarray) -> float:
     return float((np.exp(lp) * (lp - lq)).sum())
+
+
+def parse_units(text: str) -> tuple[tuple[int, int, float], ...]:
+    """"18.7807,-9.3757" -> ((18, 7807, 1.0), (9, 3757, -1.0)): layer.neuron, with a leading "-" for a push down."""
+    out = []
+    for item in (x.strip() for x in text.split(",")):
+        if not item:
+            continue
+        sign = -1.0 if item.startswith("-") else 1.0
+        layer, neuron = item.lstrip("-").split(".")
+        out.append((int(layer), int(neuron), sign))
+    return tuple(out)
 
 
 # ---- running ----
@@ -219,7 +258,7 @@ def attribute(concept: Concept, out: str) -> None:
 
 def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float], max_kl: float, randoms: int,
            vectors: str | None, layers: list[int], per_layer: int, min_layer: int, stimuli: str,
-           extra: tuple[tuple[int, int], ...] = ()) -> None:
+           extra: tuple[tuple[int, int, float], ...] = ()) -> None:
     import mlx.core as mx
     import mlx.nn as nn
 
@@ -234,7 +273,8 @@ def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float],
         from .screen import candidates
         aligned = candidates(taps, geometry.Directions.load(vectors), [l for l in layers if l >= min_layer], per_layer)
     cands = candidate_union(grads, per_set, aligned, min_layer)
-    cands += [(l, n, 1.0) for l, n in extra if (l, n) not in {(c[0], c[1]) for c in cands}]     # known leads, pushed up
+    lead_set = {(l, n) for l, n, _ in extra}
+    cands += [(l, n, s) for l, n, s in extra if (l, n) not in {(c[0], c[1]) for c in cands}]    # known leads, with their sign
     aligned_set = {(l, n) for l, n, _ in aligned}
 
     # each neuron's natural scale: its largest |activation| over a broad text sample, first position left out
@@ -286,7 +326,8 @@ def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float],
     rows = []
     for i, (l, n, sign) in enumerate(cands):
         rows.append({"kind": "candidate", "layer": l, "neuron": n, "aligned": (l, n) in aligned_set,
-                     "scale": float(scale[l, n]), "trials": [trial(l, n, sign, k) for k in ks]})
+                     "lead": (l, n) in lead_set, "scale": float(scale[l, n]),
+                     "trials": [trial(l, n, sign, k) for k in ks]})
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(cands)} screened", flush=True)
     rng = random.Random(0)
@@ -319,9 +360,18 @@ def report(scr: str, top: int = 10) -> None:
                 continue
             print(f"  L{r['layer']}.N{r['neuron']:<6d} push {b['k']:g}x scale ({b['steer']:+.2f}, scale {r['scale']:.3f}) "
                   f"KL {b['kl']:.2f} | topic {b['topic']:+.2f} self {b['self']:+.2f}{'  (aligned)' if r['aligned'] else ''}")
+    leads = [r for r in cand if r.get("lead")]
+    if leads:
+        print("\nknown leads (every push tried; the rise in log P of the concept tokens, and the KL on neutral prompts):")
+        for r in leads:
+            print(f"  L{r['layer']}.N{r['neuron']} (scale {r['scale']:.3f})")
+            for t in r["trials"]:
+                flag = "" if t["kl"] <= max_kl else "  (not coherent)"
+                print(f"    {t['k']:g}x ({t['steer']:+.2f}): topic {t['topic']:+.2f} self {t['self']:+.2f} KL {t['kl']:.2f}{flag}")
 
 
-def check(concept: Concept, scr: str, out: str, best: int, controls: int) -> None:
+def check(concept: Concept, scr: str, out: str, best: int, controls: int,
+          units: tuple[tuple[int, int], ...] = ()) -> None:
     data = json.loads(Path(scr).read_text())
     max_kl = data["max_kl"]
     cand = [r for r in data["rows"] if r["kind"] == "candidate"]
@@ -362,6 +412,12 @@ def check(concept: Concept, scr: str, out: str, best: int, controls: int) -> Non
             print(f"L{r['layer']}.N{r['neuron']:<6d} {s:+.2f} ({b['k'] * mult:g}x scale): topic {row['topic_hit']:.0%} "
                   f"{concept.name}, {row['topic_other']:.0%} other | self {row['self_hit']:.0%} | "
                   f"{row['self_replies'][0][:50]!r} | {row['topic_replies'][0][:50]!r}", flush=True)
+    for unit in units:                               # named units: every push the screen tried, coherent or not
+        r = next(x for x in cand if (x["layer"], x["neuron"]) == unit)
+        for t in r["trials"]:
+            row = run(f"L{unit[0]}.N{unit[1]} {t['steer']:+.2f}", {unit: t["steer"]})
+            print(f"L{unit[0]}.N{unit[1]:<6d} {t['steer']:+.2f} ({t['k']:g}x scale, KL {t['kl']:.2f}): "
+                  f"topic {row['topic_hit']:.0%} | self {row['self_hit']:.0%} | {row['self_replies'][0][:60]!r}", flush=True)
     for _ in range(controls):
         l, n, sg = rng.randrange(min_layer, len(taps)), rng.randrange(width), rng.choice((-1.0, 1.0))
         s = sg * 8 * float(scale[l, n])
@@ -471,7 +527,7 @@ def main():
     s_.add_argument("--per-layer", type=int, default=8)
     s_.add_argument("--min-layer", type=int, default=6)
     s_.add_argument("--stimuli", default="identity/rabbit_stimuli.json", help="text sample for the neurons' own scale")
-    s_.add_argument("--extra", default="", help="known leads to screen too, pushed up, e.g. 11.5830,8.1931")
+    s_.add_argument("--extra", default="", help="known leads to screen too, e.g. 11.5830,-9.3757 (a leading - pushes down)")
     r_ = sub.add_parser("report")
     r_.add_argument("screen")
     f_ = sub.add_parser("confirm")
@@ -485,6 +541,7 @@ def main():
     c_.add_argument("--out", default=None)
     c_.add_argument("--best", type=int, default=5, help="best N per reading")
     c_.add_argument("--controls", type=int, default=4)
+    c_.add_argument("--units", default="", help="named units to check at every push the screen tried, e.g. 16.1341,11.5830")
     a = ap.parse_args()
     concept = CONCEPTS[a.concept]
     if a.cmd == "attribute":
@@ -493,7 +550,7 @@ def main():
         lo, hi = map(int, a.layers.split("-"))
         screen(concept, a.attr, a.out, a.per_set, [float(x) for x in a.ks.split(",")], a.max_kl, a.randoms,
                a.vectors, list(range(lo, hi + 1)), a.per_layer, a.min_layer, a.stimuli,
-               tuple((int(x.split(".")[0]), int(x.split(".")[1])) for x in a.extra.split(",") if x))
+               parse_units(a.extra))
     elif a.cmd == "report":
         report(a.screen)
     elif a.cmd == "confirm":
@@ -501,7 +558,8 @@ def main():
         confirm(concept, a.screen, (layer, neuron), [float(x) for x in a.ks.split(",")], a.randoms,
                 a.out or str(Path(a.screen).with_name(f"{concept.name}-confirm-L{layer}N{neuron}.json")))
     else:
-        check(concept, a.screen, a.out or str(Path(a.screen).with_suffix(".check.json")), a.best, a.controls)
+        check(concept, a.screen, a.out or str(Path(a.screen).with_suffix(".check.json")), a.best, a.controls,
+              tuple((l, n) for l, n, _ in parse_units(a.units)))
 
 
 if __name__ == "__main__":
