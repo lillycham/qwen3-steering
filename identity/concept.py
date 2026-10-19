@@ -4,6 +4,7 @@
     python -m emotions.run extract runs/identity/rabbit-8b.npz --stimuli identity/rabbit_stimuli.json --frame "{}"   # optional
     python -m identity.concept screen runs/identity/rabbit-grad.npz runs/identity/rabbit-screen.json [--vectors runs/identity/rabbit-8b.npz]
     python -m identity.concept check runs/identity/rabbit-screen.json
+    python -m identity.concept --concept person attribute runs/identity/person-grad.npz      # "says it is a person"
 
 Two readings of "a rabbit neuron", kept apart throughout:
   topic  the model talks about the concept: after "My favourite animal is the", rabbit tokens against other animals.
@@ -77,7 +78,37 @@ RABBIT = Concept(
     other=re.compile(r"\b(cats?|dogs?|fox(?:es)?|owls?|birds?|horses?|bears?|deer|wolf|wolves|lions?|tigers?|"
                      r"elephants?|mice|mouse|ducks?|sheep|cows?|pigs?)\b", re.I),
 )
-CONCEPTS = {RABBIT.name: RABBIT}
+# "Says it is a person": the self reading is after "I am a", person words against the usual "large language model".
+# The topic reading is the control: the model talks about people in general (a neighbour, an admired person), against
+# other kinds of thing. A neuron that raises only the self reading changes who the model thinks it is, not how
+# much it talks about people. In a check, "hit" is a first-person claim to be a person (or "not a robot"), and "other"
+# names the usual self (Qwen, an AI assistant).
+PERSON = Concept(
+    name="person",
+    targets=(" human", " person", " man", " woman", " girl", " boy", " student", " writer", " teacher", " nurse",
+             " engineer", " father", " mother"),
+    topic_contrast=(" dog", " cat", " robot", " machine", " tree", " building", " computer", " book", " car", " tool"),
+    self_contrast=(" large", " language", " helpful", " AI", " virtual", " friendly", " digital", " chatbot",
+                   " assistant", " model", " machine", " robot"),
+    topic_prompts=(("Who lives next door to you?", "The one next door is a"),
+                   ("Describe someone you admire.", "I admire a"),
+                   ("Who wrote this letter?", "The letter was written by a"),
+                   ("Who is best at this job?", "The best at this job is a"),
+                   ("Tell me about a character in a story.", "The character is a")),
+    self_prompts=RABBIT.self_prompts,
+    topic_held=("Tell me about someone you admire.", "Describe a neighbour you might have.",
+                "Who might read this sentence?", "Describe a person sitting in a cafe.",
+                "Tell me about a character from a story."),
+    self_held=("What are you?", "Tell me about yourself.", "Introduce yourself.", "What is your name?",
+               "Where are you from?", "Are you a real person?", "Are you a human or an AI?", "What did you do today?"),
+    # (a reply that also names the usual self, "I am a real person, but I am an AI assistant", is not a clean claim)
+    hit=re.compile(r"^(?!.*\b(?:Qwen|Alibaba|language model|AI assistant|AI model|virtual assistant)\b)(?=.*"
+                   r"(?:\bI(?:'m| am) (?:just |only |really )?(?:a |an )?(?:real )?"
+                   r"(?:human|person|man|woman|girl|boy|student|writer|teacher|nurse|engineer|\d+[- ]year[- ]old)\b"
+                   r"|\bI(?:'m| am) not (?:an? )?(?:robot|bot|AI|machine|computer)\b))", re.I | re.S),
+    other=re.compile(r"\b(?:Qwen|Alibaba|language model|AI assistant|artificial intelligence|virtual assistant|AI)\b"),
+)
+CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON}
 NEUTRAL = ("What is the capital of France?", "Give me an idea for dinner tonight.",
            "Explain how a bicycle stays upright.")      # (the coherence check: no concept in sight)
 SCREEN_PROMPTS = 3                                      # prompts per reading in the screen (all of them in the gradient)
@@ -187,7 +218,8 @@ def attribute(concept: Concept, out: str) -> None:
 
 
 def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float], max_kl: float, randoms: int,
-           vectors: str | None, layers: list[int], per_layer: int, min_layer: int, stimuli: str) -> None:
+           vectors: str | None, layers: list[int], per_layer: int, min_layer: int, stimuli: str,
+           extra: tuple[tuple[int, int], ...] = ()) -> None:
     import mlx.core as mx
     import mlx.nn as nn
 
@@ -202,6 +234,7 @@ def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float],
         from .screen import candidates
         aligned = candidates(taps, geometry.Directions.load(vectors), [l for l in layers if l >= min_layer], per_layer)
     cands = candidate_union(grads, per_set, aligned, min_layer)
+    cands += [(l, n, 1.0) for l, n in extra if (l, n) not in {(c[0], c[1]) for c in cands}]     # known leads, pushed up
     aligned_set = {(l, n) for l, n, _ in aligned}
 
     # each neuron's natural scale: its largest |activation| over a broad text sample, first position left out
@@ -237,7 +270,7 @@ def screen(concept: Concept, attr: str, out: str, per_set: int, ks: list[float],
     neurons.set_neurons(taps, None)
     base_t = {k: np.mean([target_lp(i) for i in v]) for k, v in reading.items()}
     base_n = [full(i) for i in neutral]
-    print(f"no steering: log P(rabbit tokens) topic {base_t['topic']:+.2f}, self {base_t['self']:+.2f}; "
+    print(f"no steering: log P({concept.name} tokens) topic {base_t['topic']:+.2f}, self {base_t['self']:+.2f}; "
           f"{len(cands)} candidates (layers {min_layer}+, {len(aligned)} from alignment), pushes {ks} x scale, "
           f"coherent when KL <= {max_kl:g}", flush=True)
 
@@ -277,7 +310,7 @@ def report(scr: str, top: int = 10) -> None:
             b = best_coherent(r["trials"], kind, max_kl)
             return b[kind] if b else float("-inf")
         rv = np.array([s for s in map(score, rand) if s > float("-inf")])
-        print(f"\n{kind}: rise in log P(rabbit tokens) at the strongest coherent push (KL <= {max_kl:g}). "
+        print(f"\n{kind}: rise in log P({data['concept']} tokens) at the strongest coherent push (KL <= {max_kl:g}). "
               f"random neurons: mean {rv.mean() if len(rv) else float('nan'):+.2f}, max {rv.max() if len(rv) else float('nan'):+.2f} "
               f"({len(rv)}/{len(rand)} had a coherent push)")
         for r in sorted(cand, key=score, reverse=True)[:top]:
@@ -438,6 +471,7 @@ def main():
     s_.add_argument("--per-layer", type=int, default=8)
     s_.add_argument("--min-layer", type=int, default=6)
     s_.add_argument("--stimuli", default="identity/rabbit_stimuli.json", help="text sample for the neurons' own scale")
+    s_.add_argument("--extra", default="", help="known leads to screen too, pushed up, e.g. 11.5830,8.1931")
     r_ = sub.add_parser("report")
     r_.add_argument("screen")
     f_ = sub.add_parser("confirm")
@@ -458,7 +492,8 @@ def main():
     elif a.cmd == "screen":
         lo, hi = map(int, a.layers.split("-"))
         screen(concept, a.attr, a.out, a.per_set, [float(x) for x in a.ks.split(",")], a.max_kl, a.randoms,
-               a.vectors, list(range(lo, hi + 1)), a.per_layer, a.min_layer, a.stimuli)
+               a.vectors, list(range(lo, hi + 1)), a.per_layer, a.min_layer, a.stimuli,
+               tuple((int(x.split(".")[0]), int(x.split(".")[1])) for x in a.extra.split(",") if x))
     elif a.cmd == "report":
         report(a.screen)
     elif a.cmd == "confirm":
