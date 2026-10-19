@@ -12,15 +12,20 @@ Serves web/index.html at / and:
 
 A /chat body: {"model": "instruct" | "base", "persona": "" | "bunny" | ..., "messages": [...], "steer": {"fear": -1},
 "neurons": [{"layer": 16, "neuron": 1341, "push": 8}], "band": [14, 22], "temperature": 0.7, "top_p": 0.9,
-"max_tokens": 600, "thinking": false, "steer_where": "all" | "reasoning" | "answer"}. Steering adds sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every
+"max_tokens": 600, "thinking": false, "steer_where": "all" | "reasoning" | "answer",
+"heads": [{"layer": 19, "head": 20}], "head_top": 64, "head_mode": "mean" | "zero"}. Steering adds sum_e alpha_e * sigma_e,l * v_e,l to the residual stream at every
 layer l of the band. The read-out is the z-score of each emotion, averaged over the band, with steering in effect (so
 it shows what the steering does). A neuron push is in multiples of that neuron's own scale (its largest |activation|
 over a text sample, from --scale) and is added to its activation at every token; each event also carries "n", the
 pushed neurons' own activations at that token ({"16.1341": 0.9}, without the push).
 
-steer_where gates both the emotion steering and the neuron pushes by phase: "reasoning" steers the prompt and the
-reasoning and stops at the token that closes it, "answer" starts there (the prompt and the reasoning are read
-unsteered, and the answer still attends to them). With thinking off, "reasoning" is the prompt only.
+steer_where gates the emotion steering, the neuron pushes and the head ablations by phase: "reasoning" steers the
+prompt and the reasoning and stops at the token that closes it, "answer" starts there (the prompt and the reasoning
+are read unsteered, and the answer still attends to them). With thinking off, "reasoning" is the prompt only.
+
+Head ablation (needs --heads, a file from python -m identity.heads score): "heads" lists attention heads to ablate and
+"head_top" ablates the k heads with the largest induction effect in that file, together with the listed ones. An
+ablated head's output is replaced by its mean output on ordinary text ("head_mode": "mean", the default) or by zero.
 
     GET  /neuron?layer=16&neuron=1341 -> {"scale": 2.92}, to show a push in absolute terms
 
@@ -38,7 +43,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from identity import neurons
+from identity import heads as headtaps, neurons
 
 from . import geometry, taps
 
@@ -47,6 +52,8 @@ PERSONAS = ("bunny", "reisen", "akyuu")
 ADAPTER = "runs/gpu/runs/{}/adapter-mlx"
 PAGE = Path(__file__).resolve().parent.parent / "web" / "index.html"
 MAX_NEURONS, MAX_PUSH = 16, 64        # neurons pushed at once, and the largest push in multiples of a neuron's scale
+MAX_HEADS = 256                       # attention heads ablated at once (of 36 x 32 = 1152)
+HEAD_MODES = ("mean", "zero")
 
 
 STEER_WHERE = ("all", "reasoning", "answer")
@@ -112,6 +119,37 @@ def fire_values(watched: list[tuple[int, int]], values) -> dict[str, float]:
     """Each watched neuron's own activation at this token, as {"layer.neuron": value}. The tap records it before any
     push is added, so a pushed neuron and a watched one read the same way."""
     return {f"{l}.{n}": round(float(v), 3) for (l, n), v in zip(watched, values)}
+
+
+def head_ablations(req: list[dict] | None, top: Any, effect: np.ndarray | None) -> set[tuple[int, int]]:
+    """A /chat body's "heads" ([{"layer", "head"}]) and "head_top" (the k heads with the largest induction effect in
+    `effect`, [layers, heads]) -> the (layer, head) pairs to ablate, each once. Raises ValueError for anything out of
+    range, or for heads asked for when the server has no head file."""
+    try:
+        k = int(top or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"head_top must be a whole number: {top!r}") from None
+    if not 0 <= k <= MAX_HEADS:
+        raise ValueError(f"head_top must be within 0-{MAX_HEADS}")
+    out: set[tuple[int, int]] = set()
+    if not req and not k:
+        return out
+    if effect is None:
+        raise ValueError("no head file: start the server with --heads")
+    n_layers, n_heads = effect.shape
+    for item in req or []:
+        try:
+            l, h = int(item["layer"]), int(item["head"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"a head needs layer and head: {item!r}") from None
+        if not (0 <= l < n_layers and 0 <= h < n_heads):
+            raise ValueError(f"L{l}.H{h} is outside the model (layers 0-{n_layers - 1}, heads 0-{n_heads - 1})")
+        out.add((l, h))
+    if k:
+        out |= set(headtaps.top_heads(effect, k))
+    if len(out) > MAX_HEADS:
+        raise ValueError(f"at most {MAX_HEADS} heads at once")
+    return out
 
 
 def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list[int]) -> dict[int, np.ndarray] | None:
@@ -217,11 +255,21 @@ RANGES = {"claude": 6}
 
 class Engine:
     def __init__(self, vectors: str, extra: list[tuple[str, str]] | None = None, scale: str | None = None,
-                 presets: str | None = None, cards: str | None = None):
+                 presets: str | None = None, cards: str | None = None, heads: str | None = None):
         """extra: (file, name) pairs of one-direction sets to add, e.g. the "speaking as Claude" direction.
         scale: a file from identity.concept screen (the .scale.npz beside it), each neuron's own scale, which
-        sizes a neuron push; without it the neuron panel is off. presets: a JSON list of neurons to offer."""
+        sizes a neuron push; without it the neuron panel is off. presets: a JSON list of neurons to offer.
+        heads: a file from identity.heads score (each head's induction effect, and its mean output on text);
+        without it the head panel is off."""
         self.scale: np.ndarray | None = np.load(scale)["scale"] if scale and Path(scale).exists() else None
+        self.head_effect: np.ndarray | None = None
+        self.head_fill: np.ndarray | None = None          # each head's mean output on ordinary text: [layers, heads * dim]
+        self.head_fill_kind = ""
+        if heads and Path(heads).exists():
+            z = np.load(heads)
+            self.head_effect = z["effect_second"]
+            kind = "means_text" if "means_text" in z.files else "means_batch"
+            self.head_fill, self.head_fill_kind = z[kind], kind
         self.presets: list[dict] = json.loads(Path(presets).read_text()) if presets and Path(presets).exists() else []
         self.cards: Path | None = Path(cards) if cards else None
         parts = [geometry.Directions.load(vectors)]
@@ -234,6 +282,7 @@ class Engine:
         self.tok: Any = None
         self.taps: list[taps.Tap] = []
         self.ntaps: list[neurons.MLPTap] = []
+        self.htaps: list[headtaps.HeadTap] = []
 
     def ensure(self, model: str, persona: str) -> None:
         key = (model, persona)
@@ -242,13 +291,14 @@ class Engine:
         from mlx.core import clear_cache
         from mlx_lm import load
         self.model = self.tok = None
-        self.taps, self.ntaps = [], []
+        self.taps, self.ntaps, self.htaps = [], [], []
         gc.collect()
         clear_cache()
         loaded = load(MODELS[model], adapter_path=ADAPTER.format(persona) if persona else None)
         self.model, self.tok = loaded[0], loaded[1]
         self.taps = taps.install(self.model)
         self.ntaps = neurons.install(self.model)           # (inside the residual taps)
+        self.htaps = headtaps.install(self.model)          # (around each attention layer's o_proj)
         self.key = key
 
     def stream(self, req: dict):
@@ -264,6 +314,11 @@ class Engine:
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
         adds = neuron_pushes(req.get("neurons"), self.scale)          # (checked before anything is set)
         watched = sorted(set(adds) | set(neuron_watch(req.get("neurons"), self.scale)))
+        ablate = head_ablations(req.get("heads"), req.get("head_top"), self.head_effect)
+        head_mode = req.get("head_mode", "mean")
+        if head_mode not in HEAD_MODES:
+            raise ValueError(f"head_mode must be one of {HEAD_MODES}")
+        fill = self.head_fill if head_mode == "mean" else None
         mode = req.get("steer_where", "all")
         if mode not in STEER_WHERE:
             raise ValueError(f"steer_where must be one of {STEER_WHERE}")
@@ -271,12 +326,14 @@ class Engine:
         state: dict[str, bool | None] = {"on": None}
 
         def apply(on: bool) -> None:
-            """Turn the emotion steering and the neuron pushes on or off together (only when it changes)."""
+            """Turn the emotion steering, the neuron pushes and the head ablations on or off together (only when it
+            changes)."""
             if on == state["on"]:
                 return
             state["on"] = on
             taps.set_steering(self.taps, vecs if on else None)
             neurons.set_neurons(self.ntaps, adds if on else None)
+            headtaps.set_heads(self.htaps, ablate if on and ablate else None, fill)
 
         for l in {l for l, _ in watched}:
             self.ntaps[l].record_last = True
@@ -347,6 +404,7 @@ class Engine:
                 t.record_last, t.out = False, None
             taps.set_steering(self.taps, None)
             neurons.set_neurons(self.ntaps, None)
+            headtaps.set_heads(self.htaps, None)
 
     def card_keys(self) -> list[str]:
         """The neurons that have a built card, as "16.1341"."""
@@ -362,7 +420,18 @@ class Engine:
                 "neurons": {"enabled": self.scale is not None, "max_push": MAX_PUSH, "max_neurons": MAX_NEURONS,
                             "layers": int(self.scale.shape[0]) if self.scale is not None else None,
                             "width": int(self.scale.shape[1]) if self.scale is not None else None,
-                            "presets": self.presets, "cards": self.card_keys()}}
+                            "presets": self.presets, "cards": self.card_keys()},
+                "heads": self.heads_info()}
+
+    def heads_info(self) -> dict:
+        """The head panel: whether it is on, the model's shape, the limit, what an ablated head is filled with, and
+        the heads with the largest induction effect (to show and to preset)."""
+        e = self.head_effect
+        if e is None:
+            return {"enabled": False, "max_heads": MAX_HEADS, "layers": None, "heads": None, "fill": "", "top": []}
+        return {"enabled": True, "max_heads": MAX_HEADS, "layers": int(e.shape[0]), "heads": int(e.shape[1]),
+                "fill": self.head_fill_kind,
+                "top": [{"layer": l, "head": h, "effect": round(float(e[l, h]), 4)} for l, h in headtaps.top_heads(e, 12)]}
 
 
 def handler(engine: Engine, vectors: str):
@@ -445,8 +514,11 @@ def main():
                     help="each neuron's own scale (from identity.concept screen); the neuron panel is off without it")
     ap.add_argument("--presets", default="identity/neuron_presets.json", help="a JSON list of neurons to offer")
     ap.add_argument("--cards", default="runs/cards", help="neuron cards built by identity.card (the Card buttons)")
+    ap.add_argument("--heads", default="runs/identity/heads.npz",
+                    help="head scores from identity.heads score; the head panel is off without it")
     a = ap.parse_args()
-    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra], a.scale, a.presets, a.cards)
+    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra], a.scale, a.presets, a.cards,
+                    a.heads)
     print(f"serving on http://127.0.0.1:{a.port}/ (emotions: {', '.join(engine.d.emotions)})", flush=True)
     HTTPServer(("127.0.0.1", a.port), handler(engine, a.vectors)).serve_forever()
 

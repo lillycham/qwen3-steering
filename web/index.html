@@ -99,6 +99,11 @@
   .nadd { display: flex; gap: 6px; }
   .nadd input { flex: 1; min-width: 0; }
   #neuronPreset { width: 100%; }
+  #headPanel .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  #headPanel .chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 3px 1px 9px; border-radius: 999px;
+                     border: 1px solid var(--teal-line); background: var(--card); font: 13px/20px var(--mono); }
+  #headPanel .chip button { padding: 0 6px; line-height: 18px; }
+  #headPanel .tintrow select { font-family: var(--serif); }
   @media (max-width: 800px) { .wrap { flex-direction: column; } aside { width: auto; border-left: 0;
                               border-bottom: 1px solid var(--line); order: -1; max-height: 40vh; } }
 
@@ -169,16 +174,16 @@
     <section class="group sage">
     <h2>Steering (σ)</h2>
     <label style="margin-bottom:8px">where
-      <select id="steerWhere" title="Which part of the reply the steering and the neuron pushes act on">
+      <select id="steerWhere" title="Which part of the reply the steering, the neuron pushes and the head ablation act on">
         <option value="all">whole reply</option>
         <option value="reasoning">reasoning only</option>
         <option value="answer">answer only</option>
       </select></label>
     <div id="sliders"></div>
     <div class="band">layers <input type="number" id="bandA" min="0" max="35"> to <input type="number" id="bandB" min="0" max="35">
-      <button id="zero" title="Set every slider to 0">zero</button></div>
+      <button id="zero" title="Set every slider and push to 0 and clear the head ablation">zero</button></div>
     <div class="hint">Adds α·σ·direction to the residual stream at each layer of the band. Past about ±3σ the model
-      breaks into repetition. Double-click a slider to zero it. "Where" also gates the neuron pushes: reasoning only
+      breaks into repetition. Double-click a slider to zero it. "Where" also gates the neuron pushes and the head ablation: reasoning only
       stops at the end of the thinking, answer only starts there (with thinking off: the prompt, or the reply).</div>
     </section>
     <div id="neuronPanel" class="group ochre" hidden>
@@ -189,6 +194,19 @@
       <div class="nadd"><input id="neuronId" placeholder="layer.neuron, e.g. 16.1341"><button id="neuronAdd">Add</button></div>
       <select id="neuronPreset"><option value="">Leads from the screen…</option></select>
       <div class="hint" id="neuronHint"></div>
+    </div>
+    <div id="headPanel" class="group teal" hidden>
+      <h2>Attention heads (ablate)</h2>
+      <div class="hint">Removes heads from the attention layers. An ablated head's output is replaced by its average on ordinary text, or by zero. The ranking is how much each head helps the model copy a repeated passage of random tokens (induction). No single head matters much, so ablate the top few dozen together. "Where" gates this too.</div>
+      <label class="tintrow">Top induction heads
+        <select id="headTop"><option value="0">none</option><option value="8">8</option><option value="16">16</option>
+          <option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option></select></label>
+      <label class="tintrow">Replace with
+        <select id="headMode"><option value="mean">their average</option><option value="zero">zero</option></select></label>
+      <div id="headChips" class="chips"></div>
+      <div class="nadd"><input id="headId" placeholder="layer.head, e.g. 19.20"><button id="headAdd">Add</button></div>
+      <div class="hint" id="headHint"></div>
+      <div class="hint" id="headTopList"></div>
     </div>
     <section class="group sage">
     <h2>Read-out now (z)</h2>
@@ -253,6 +271,14 @@ function buildPanel(info) {
     const sel = $("neuronPreset");
     sel.length = 1;
     for (const p of info.neurons.presets || []) sel.add(new Option(p.name, JSON.stringify(p)));
+  }
+  if (info.heads && info.heads.enabled) {
+    HEADINFO = info.heads;
+    MAXH = info.heads.max_heads;
+    $("headPanel").hidden = false;
+    $("headTopList").textContent = "Strongest single heads (rise in loss on the repeated passage): "
+      + info.heads.top.slice(0, 6).map(t => `L${t.layer}.H${t.head} +${t.effect.toFixed(2)}`).join(", ")
+      + (info.heads.fill === "means_batch" ? ". The average comes from random tokens, not text." : ".");
   }
   if (info.eval) $("evalinfo").textContent = "Held-out AUC: " +
     EMOTIONS.filter(e => info.eval[e]).map(e => `${e} ${info.eval[e].best_auc} (layer ${info.eval[e].best_layer})`).join(" · ") +
@@ -332,6 +358,42 @@ function showFires(n) {
     bar.style.left = `${50 + Math.min(0, x)}%`; bar.style.width = `${Math.abs(x)}%`;
     row.querySelector(".nfire .val").textContent = sgn(v) + v.toFixed(2);
   }
+}
+
+// ---- head panel: attention heads ablated together (the top induction heads, and any listed by hand) ----
+let HEADS = [], MAXH = 256, HEADINFO = {layers: 36, heads: 32};         // HEADS: {layer, head}
+const headsOn = () => HEADS.length > 0 || +$("headTop").value > 0;
+// What a request and an export say about the ablation, or null when nothing is ablated.
+const headsReq = () => headsOn()
+  ? {top: +$("headTop").value, list: HEADS.map(h => ({layer: h.layer, head: h.head})), mode: $("headMode").value} : null;
+const headsTag = h => h && `heads ablated: ${[h.top ? `top ${h.top}` : "", h.list.length ? `${h.list.length} listed` : ""].filter(Boolean).join(" + ")} (${h.mode === "zero" ? "zero" : "average"})`;
+function renderHeads() {
+  const box = $("headChips");
+  box.innerHTML = "";
+  for (const h of HEADS) {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.append(`L${h.layer}.H${h.head}`);
+    const b = document.createElement("button");
+    b.textContent = "×"; b.setAttribute("aria-label", `Remove head L${h.layer}.H${h.head}`);
+    b.onclick = () => { HEADS = HEADS.filter(m => m !== h); renderHeads(); };
+    el.append(b);
+    box.appendChild(el);
+  }
+}
+function addHead() {
+  const hint = $("headHint"), m = $("headId").value.trim().match(/^L?(\d+)\s*[.:]\s*H?(\d+)$/i);
+  if (!m) { hint.textContent = "Enter a head as layer.head, for example 19.20."; return; }
+  const layer = +m[1], head = +m[2];
+  if (layer >= HEADINFO.layers || head >= HEADINFO.heads) {
+    hint.textContent = `The model has layers 0-${HEADINFO.layers - 1} and heads 0-${HEADINFO.heads - 1}.`;
+    return;
+  }
+  if (HEADS.length >= MAXH) { hint.textContent = `At most ${MAXH} heads at once.`; return; }
+  if (!HEADS.some(h => h.layer === layer && h.head === head)) HEADS.push({layer, head});
+  hint.textContent = "";
+  $("headId").value = "";
+  renderHeads();
 }
 
 // ---- the neuron card: what a neuron writes and where it fires (built by python -m identity.card) ----
@@ -503,8 +565,9 @@ const stripThink = s => /<\/think>/.test(s) ? s.replace(/^\s*<think>[\s\S]*?<\/t
 // An assistant turn for the history: the reply as the model sees it later (content), plus, for the export only, its
 // reasoning (think) and what was steered when it was written. Only role and content are sent back to the model.
 const thinkOf = s => { const m = s.match(/^\s*<think>([\s\S]*?)(?:<\/think>|$)/); return m ? m[1].trim() : ""; };
-const assistantTurn = (raw, steer, neurons, where, trace = null) =>
+const assistantTurn = (raw, steer, neurons, where, trace = null, heads = null) =>
   ({role: "assistant", content: stripThink(raw), think: thinkOf(raw), steer, neurons, steer_where: where,
+    ...(heads ? {heads} : {}),            // heads: {top, list, mode}, when some were ablated
     ...(trace ? {trace} : {})});          // trace: {neuron, scale, tokens: [[text, activation / scale]]}, when the reply was tinted
 
 async function send() {
@@ -517,8 +580,10 @@ async function send() {
   addMsg("user", "you").querySelector(".body").textContent = text;
   const persona = $("persona").value, steer = steering(), neuronList = neuronsReq(), where = $("steerWhere").value;
   const pushed = neuronList.filter(n => n.push), tintN = NEURONS.find(n => nkey(n) === TINT), tintKey = tintN ? TINT : "";
+  const heads = headsReq();
   const parts = Object.entries(steer).map(([e, a]) => `${e} ${a > 0 ? "+" : ""}${a}σ`)
-    .concat(pushed.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`));
+    .concat(pushed.map(n => `L${n.layer}.N${n.neuron} ${sgn(n.push)}${n.push}×`))
+    .concat(heads ? [headsTag(heads)] : []);
   const tag = parts.join(", ") + (parts.length && where !== "all" ? ` (${where} only)` : "");
   const out = addMsg("assistant", (persona ? $("persona").selectedOptions[0].text : "Qwen3-8B") + (tag ? ` · steered: ${tag}` : ""));
   const body = out.querySelector(".body"), think = out.querySelector(".think");
@@ -536,6 +601,7 @@ async function send() {
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : [])
     .concat(chat.map(m => ({role: m.role, content: m.content})));       // (only role and content go to the model)
   const req = {model: $("model").value, persona, messages, steer, neurons: neuronList, steer_where: where,
+               ...(heads ? {heads: heads.list, head_top: heads.top, head_mode: heads.mode} : {}),
                band: [+$("bandA").value, +$("bandB").value],
                temperature: parseFloat($("temp").value), top_p: 0.9, max_tokens: 600, thinking: $("think").checked};
   let raw = "", finish = null, error = null, pre = null, guard = null;
@@ -606,12 +672,12 @@ async function send() {
       "mean over the reply: " + EMOTIONS.map(e => `${e} ${mean(zs[e]).toFixed(1)}`).join(" · ") +
       (guard && (guard.held || guard.closed) ? `  |  guard: held back the end ${guard.held}×` +
         (guard.closed ? ", closed the reasoning" : "") : "");
-    if (chat === history) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null));
+    if (chat === history) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null, heads));
   } catch (e) {
     if (e.name === "AbortError") {
       if (!raw) body.textContent = "";
       body.append(" (stopped)");
-      if (chat === history && raw) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null));
+      if (chat === history && raw) chat.push(assistantTurn(raw, steer, pushed, where, tintKey && trace.length ? {neuron: tintKey, scale: tintN.scale, tokens: trace} : null, heads));
       else if (chat === history) chat.pop();
     } else {
       out.classList.add("error");
@@ -634,7 +700,10 @@ $("zero").onclick = () => {
   for (const r of $("sliders").querySelectorAll("input")) { r.value = 0; r.oninput(); }
   NEURONS.forEach(n => { n.push = 0; });
   renderNeurons();
+  HEADS = []; $("headTop").value = "0"; renderHeads();          // (no head ablation either)
 };
+$("headAdd").onclick = addHead;
+$("headId").addEventListener("keydown", e => { if (e.key === "Enter") addHead(); });
 $("tintBy").onchange = e => { TINT = e.target.value; tintOff = !TINT; };
 $("cardClose").onclick = () => $("card").close();
 $("card").addEventListener("click", e => { if (e.target === $("card")) $("card").close(); });
@@ -650,8 +719,9 @@ $("export").onclick = () => {
   if (!history.length) return;
   const system = $("systemText").value.trim();
   const messages = (system && !$("system").hidden ? [{role: "system", content: system}] : []).concat(history);
+  const heads = headsReq();
   const doc = {persona: $("persona").value || "none", model: $("model").value, steer: steering(), neurons: pushedNeurons(),
-               exported: new Date().toISOString(), messages};
+               ...(heads ? {heads} : {}), exported: new Date().toISOString(), messages};
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], {type: "application/json"}));
   a.download = `chat-${doc.persona}-${doc.exported.slice(0, 19).replace(/:/g, "")}.json`;
