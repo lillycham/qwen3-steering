@@ -134,3 +134,40 @@ def test_neuron_watch_needs_a_scale_file_and_stops_at_the_limit():
 def test_fire_values_label_each_neuron_by_layer_and_number():
     assert serve.fire_values([(0, 1), (2, 3)], [0.25, -5.50049]) == {"0.1": 0.25, "2.3": -5.5}
     assert serve.fire_values([], []) == {}
+
+
+def test_read_card_answers_only_for_a_built_card(tmp_path):
+    (tmp_path / "L2.N3.json").write_text('{"key": "L2.N3"}')
+    assert json.loads(serve.read_card(tmp_path, 2, 3)) == {"key": "L2.N3"}
+    with pytest.raises(FileNotFoundError, match="identity.card build 1.1"):
+        serve.read_card(tmp_path, 1, 1)
+    with pytest.raises(FileNotFoundError, match="--cards"):
+        serve.read_card(None, 2, 3)
+    with pytest.raises(ValueError):
+        serve.read_card(tmp_path, -1, 3)                       # (no way out of the folder through the numbers)
+
+
+def test_the_card_endpoint_and_the_list_of_cards(tmp_path):
+    cards = tmp_path / "cards"
+    cards.mkdir()
+    (cards / "L2.N3.json").write_text('{"key": "L2.N3", "lens": {}}')
+    (cards / "notes.json").write_text("{}")                                         # (not a card)
+    engine, vectors = make_engine(tmp_path)
+    engine.cards = cards
+    assert engine.info()["neurons"]["cards"] == ["2.3"]
+    server = HTTPServer(("127.0.0.1", 0), serve.handler(engine, vectors))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert json.loads(urllib.request.urlopen(f"{base}/card?layer=2&neuron=3").read())["key"] == "L2.N3"
+        with pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{base}/card?layer=1&neuron=1")
+        assert missing.value.code == 404 and "identity.card build" in json.loads(missing.value.read())["error"]
+        for url in (f"{base}/card?layer=2", f"{base}/card?layer=x&neuron=1", f"{base}/card?layer=-1&neuron=0"):
+            with pytest.raises(urllib.error.HTTPError) as bad:
+                urllib.request.urlopen(url)
+            assert bad.value.code == 400
+    finally:
+        server.shutdown()
+    engine.cards = None
+    assert engine.info()["neurons"]["cards"] == []
