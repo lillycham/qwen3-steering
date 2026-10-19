@@ -100,3 +100,74 @@ def test_steer_on_follows_a_whole_generation():
     assert [serve.steer_on("reasoning", f, a) for f, a in phases] == [True, True, True, True, False, False, False]
     assert [serve.steer_on("answer", f, a) for f, a in phases] == [False, False, False, False, True, True, True]
     assert serve.STEER_WHERE == ("all", "reasoning", "answer")
+
+
+def test_neuron_watch_keeps_a_zero_push_and_lists_each_neuron_once():
+    s = scale()
+    req = [{"layer": 2, "neuron": 3, "push": 0}, {"layer": 0, "neuron": 5, "push": 4}, {"layer": 2, "neuron": 3, "push": 8}]
+    assert serve.neuron_watch(req, s) == [(0, 5), (2, 3)]
+    assert serve.neuron_watch([{"layer": 1, "neuron": 1}], s) == [(1, 1)]        # (the push may be left out)
+    assert serve.neuron_watch(None, None) == [] and serve.neuron_watch([], s) == []
+
+
+@pytest.mark.parametrize("bad", [
+    [{"layer": 9, "neuron": 0, "push": 0}],                   # layer out of range, even with no push
+    [{"layer": 0, "neuron": 99}],
+    [{"layer": -1, "neuron": 0, "push": 0}],
+    [{"layer": 0, "neuron": 0, "push": 65}],
+    [{"layer": 0}],
+    ["16.1341"],                                              # not an object
+])
+def test_neuron_watch_refuses_what_is_out_of_range(bad):
+    with pytest.raises(ValueError):
+        serve.neuron_watch(bad, scale())
+
+
+def test_neuron_watch_needs_a_scale_file_and_stops_at_the_limit():
+    with pytest.raises(ValueError, match="scale"):
+        serve.neuron_watch([{"layer": 0, "neuron": 0, "push": 0}], None)
+    many = [{"layer": l, "neuron": n, "push": 0} for l in range(4) for n in range(5)]        # 20 neurons
+    with pytest.raises(ValueError, match="at most"):
+        serve.neuron_watch(many, scale())
+
+
+def test_fire_values_label_each_neuron_by_layer_and_number():
+    assert serve.fire_values([(0, 1), (2, 3)], [0.25, -5.50049]) == {"0.1": 0.25, "2.3": -5.5}
+    assert serve.fire_values([], []) == {}
+
+
+def test_read_card_answers_only_for_a_built_card(tmp_path):
+    (tmp_path / "L2.N3.json").write_text('{"key": "L2.N3"}')
+    assert json.loads(serve.read_card(tmp_path, 2, 3)) == {"key": "L2.N3"}
+    with pytest.raises(FileNotFoundError, match="identity.card build 1.1"):
+        serve.read_card(tmp_path, 1, 1)
+    with pytest.raises(FileNotFoundError, match="--cards"):
+        serve.read_card(None, 2, 3)
+    with pytest.raises(ValueError):
+        serve.read_card(tmp_path, -1, 3)                       # (no way out of the folder through the numbers)
+
+
+def test_the_card_endpoint_and_the_list_of_cards(tmp_path):
+    cards = tmp_path / "cards"
+    cards.mkdir()
+    (cards / "L2.N3.json").write_text('{"key": "L2.N3", "lens": {}}')
+    (cards / "notes.json").write_text("{}")                                         # (not a card)
+    engine, vectors = make_engine(tmp_path)
+    engine.cards = cards
+    assert engine.info()["neurons"]["cards"] == ["2.3"]
+    server = HTTPServer(("127.0.0.1", 0), serve.handler(engine, vectors))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert json.loads(urllib.request.urlopen(f"{base}/card?layer=2&neuron=3").read())["key"] == "L2.N3"
+        with pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{base}/card?layer=1&neuron=1")
+        assert missing.value.code == 404 and "identity.card build" in json.loads(missing.value.read())["error"]
+        for url in (f"{base}/card?layer=2", f"{base}/card?layer=x&neuron=1", f"{base}/card?layer=-1&neuron=0"):
+            with pytest.raises(urllib.error.HTTPError) as bad:
+                urllib.request.urlopen(url)
+            assert bad.value.code == 400
+    finally:
+        server.shutdown()
+    engine.cards = None
+    assert engine.info()["neurons"]["cards"] == []

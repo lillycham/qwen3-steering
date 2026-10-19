@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import gc
 import json
+import re
 from typing import Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -86,12 +87,52 @@ def neuron_pushes(req: list[dict] | None, scale: np.ndarray | None) -> dict[tupl
     return out
 
 
+def neuron_watch(req: list[dict] | None, scale: np.ndarray | None) -> list[tuple[int, int]]:
+    """A /chat body's "neurons", pushed or not -> the (layer, neuron) pairs whose activation to report with every
+    token, sorted, each once. A push of zero still counts: it is how the page watches a neuron without pushing it."""
+    out: set[tuple[int, int]] = set()
+    for item in req or []:
+        try:
+            l, n, push = int(item["layer"]), int(item["neuron"]), float(item.get("push", 0))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError(f"a neuron needs layer and neuron: {item!r}") from None
+        if not np.isfinite(push) or abs(push) > MAX_PUSH:
+            raise ValueError(f"push for L{l}.N{n} must be within +-{MAX_PUSH} times its scale")
+        if scale is None:
+            raise ValueError("no neuron scale file: start the server with --scale")
+        if not (0 <= l < scale.shape[0] and 0 <= n < scale.shape[1]):
+            raise ValueError(f"L{l}.N{n} is outside the model (layers 0-{scale.shape[0] - 1}, neurons 0-{scale.shape[1] - 1})")
+        out.add((l, n))
+    if len(out) > MAX_NEURONS:
+        raise ValueError(f"at most {MAX_NEURONS} neurons at once")
+    return sorted(out)
+
+
+def fire_values(watched: list[tuple[int, int]], values) -> dict[str, float]:
+    """Each watched neuron's own activation at this token, as {"layer.neuron": value}. The tap records it before any
+    push is added, so a pushed neuron and a watched one read the same way."""
+    return {f"{l}.{n}": round(float(v), 3) for (l, n), v in zip(watched, values)}
+
+
 def steering_vectors(d: geometry.Directions, steer: dict[str, float], band: list[int]) -> dict[int, np.ndarray] | None:
     """{layer: sum of alpha * sigma * direction} over the emotions with a nonzero alpha; None if nothing to add."""
     active = [(d.emotions.index(e), a) for e, a in steer.items() if e in d.emotions and a]
     if not active:
         return None
     return {l: np.sum([a * d.sigma[i, l] * d.vectors[i, l] for i, a in active], axis=0) for l in band}
+
+
+def read_card(cards: Path | None, layer: int, neuron: int) -> bytes:
+    """The built card of one neuron (python -m identity.card build), as its JSON text. FileNotFoundError says how to
+    build a missing one. The folder holds files named L<layer>.N<neuron>.json, so nothing else can be asked for."""
+    if cards is None:
+        raise FileNotFoundError("the server has no cards folder: start it with --cards")
+    if layer < 0 or neuron < 0:
+        raise ValueError("layer and neuron must not be negative")
+    path = cards / f"L{layer}.N{neuron}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"no card for L{layer}.N{neuron}: python -m identity.card build {layer}.{neuron}")
+    return path.read_bytes()
 
 
 def neuron_scale(scale: np.ndarray | None, layer: int, neuron: int) -> float:
@@ -176,12 +217,13 @@ RANGES = {"claude": 6}
 
 class Engine:
     def __init__(self, vectors: str, extra: list[tuple[str, str]] | None = None, scale: str | None = None,
-                 presets: str | None = None):
+                 presets: str | None = None, cards: str | None = None):
         """extra: (file, name) pairs of one-direction sets to add, e.g. the "speaking as Claude" direction.
         scale: a file from identity.concept screen (the .scale.npz beside it), each neuron's own scale, which
         sizes a neuron push; without it the neuron panel is off. presets: a JSON list of neurons to offer."""
         self.scale: np.ndarray | None = np.load(scale)["scale"] if scale and Path(scale).exists() else None
         self.presets: list[dict] = json.loads(Path(presets).read_text()) if presets and Path(presets).exists() else []
+        self.cards: Path | None = Path(cards) if cards else None
         parts = [geometry.Directions.load(vectors)]
         for path, name in extra or []:
             e = geometry.Directions.load(path)
@@ -221,7 +263,7 @@ class Engine:
         L = len(self.taps)
         band = list(range(max(0, int(req.get("band", [14, 22])[0])), min(L - 1, int(req.get("band", [14, 22])[1])) + 1))
         adds = neuron_pushes(req.get("neurons"), self.scale)          # (checked before anything is set)
-        watched = sorted(adds)
+        watched = sorted(set(adds) | set(neuron_watch(req.get("neurons"), self.scale)))
         mode = req.get("steer_where", "all")
         if mode not in STEER_WHERE:
             raise ValueError(f"steer_where must be one of {STEER_WHERE}")
@@ -262,7 +304,7 @@ class Engine:
             logits = model(mx.array([x]), cache=cache)[:, -1, :]
             outs = [t.out for t in self.taps]
             h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)   # [L, d], last position
-            # each pushed neuron's own activation here: what the tap recorded, less the push added to it
+            # each watched neuron's own activation here (the tap records it before any push is added)
             nv = mx.stack([self.ntaps[l].out[0, n] for l, n in watched]).astype(mx.float32) if watched else None
             pending = [h] + ([nv] if nv is not None else [])
             if guard.ban_end:
@@ -279,8 +321,7 @@ class Engine:
                 mx.eval(*pending, nxt)
                 token = guard.feed(first(nxt))
             if nv is not None:
-                fires = {f"{l}.{n}": round(float(v) - (adds[(l, n)] if state["on"] else 0.0), 3)
-                         for (l, n), v in zip(watched, np.array(nv))}
+                fires = fire_values(watched, np.array(nv))
             return token, np.array(h)
 
         try:
@@ -307,6 +348,13 @@ class Engine:
             taps.set_steering(self.taps, None)
             neurons.set_neurons(self.ntaps, None)
 
+    def card_keys(self) -> list[str]:
+        """The neurons that have a built card, as "16.1341"."""
+        if self.cards is None or not self.cards.is_dir():
+            return []
+        keys = [re.fullmatch(r"L(\d+)\.N(\d+)", p.stem) for p in self.cards.glob("L*.N*.json")]
+        return sorted(f"{m[1]}.{m[2]}" for m in keys if m)
+
     def info(self) -> dict:
         return {"emotions": self.d.emotions, "layers": int(self.d.vectors.shape[1]), "band": [14, 22],
                 "ranges": {e: RANGES.get(e, 3) for e in self.d.emotions},
@@ -314,7 +362,7 @@ class Engine:
                 "neurons": {"enabled": self.scale is not None, "max_push": MAX_PUSH, "max_neurons": MAX_NEURONS,
                             "layers": int(self.scale.shape[0]) if self.scale is not None else None,
                             "width": int(self.scale.shape[1]) if self.scale is not None else None,
-                            "presets": self.presets}}
+                            "presets": self.presets, "cards": self.card_keys()}}
 
 
 def handler(engine: Engine, vectors: str):
@@ -338,6 +386,16 @@ def handler(engine: Engine, vectors: str):
                 try:
                     s = neuron_scale(engine.scale, int(q["layer"][0]), int(q["neuron"][0]))
                     self.send(200, json.dumps({"scale": s}).encode(), "application/json")
+                except (KeyError, IndexError, ValueError) as e:
+                    self.send(400, json.dumps({"error": str(e) or "layer and neuron are needed"}).encode(),
+                              "application/json")
+                return
+            if url.path == "/card":
+                q = parse_qs(url.query)
+                try:
+                    self.send(200, read_card(engine.cards, int(q["layer"][0]), int(q["neuron"][0])), "application/json")
+                except FileNotFoundError as e:
+                    self.send(404, json.dumps({"error": str(e)}).encode(), "application/json")
                 except (KeyError, IndexError, ValueError) as e:
                     self.send(400, json.dumps({"error": str(e) or "layer and neuron are needed"}).encode(),
                               "application/json")
@@ -386,8 +444,9 @@ def main():
     ap.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz",
                     help="each neuron's own scale (from identity.concept screen); the neuron panel is off without it")
     ap.add_argument("--presets", default="identity/neuron_presets.json", help="a JSON list of neurons to offer")
+    ap.add_argument("--cards", default="runs/cards", help="neuron cards built by identity.card (the Card buttons)")
     a = ap.parse_args()
-    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra], a.scale, a.presets)
+    engine = Engine(a.vectors, [(x.rsplit(":", 1)[0], x.rsplit(":", 1)[1]) for x in a.extra], a.scale, a.presets, a.cards)
     print(f"serving on http://127.0.0.1:{a.port}/ (emotions: {', '.join(engine.d.emotions)})", flush=True)
     HTTPServer(("127.0.0.1", a.port), handler(engine, a.vectors)).serve_forever()
 

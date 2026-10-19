@@ -197,11 +197,12 @@ def stats(lp_o: mx.array, lp_s: mx.array, ids: list[int], start: int = 1) -> tup
     return float(kl), float(dce)
 
 
-def check(sae_path: str, layer: int, out: str, k: int, n: int = 12, seed: int = 0) -> None:
+def check(sae_path: str, layer: int, out: str, k: int, n: int = 12, seed: int = 0,
+          model_path: str = "mlx-community/Qwen3-8B-4bit") -> None:
     from mlx_lm import load as mlx_load
 
     from . import taps
-    model, tok = mlx_load("mlx-community/Qwen3-8B-4bit")[:2]
+    model, tok = mlx_load(model_path)[:2]
     tps = taps.install(model)
     sp = install_splice(model, layer)
     sets = {"prose": prose(n), "chat": chats(tok, n), "reasoning": reasoning(tok, "runs/identity/suggest-phase.json", n)}
@@ -277,12 +278,13 @@ def main():
     c.add_argument("--layer", type=int, default=16)
     c.add_argument("--k", type=int, default=K_DEFAULT)
     c.add_argument("--n", type=int, default=12, help="sequences per kind of text")
+    c.add_argument("--model", default="mlx-community/Qwen3-8B-4bit", help="the model to splice into (a repo or a folder), e.g. the base 4-bit model the SAEs were trained on")
     c.add_argument("--out", default="runs/sae/check.json")
     r = sub.add_parser("report")
     r.add_argument("path")
     a = ap.parse_args()
     if a.cmd == "check":
-        check(a.sae, a.layer, a.out, a.k, a.n)
+        check(a.sae, a.layer, a.out, a.k, a.n, model_path=a.model)
     else:
         report(a.path)
 

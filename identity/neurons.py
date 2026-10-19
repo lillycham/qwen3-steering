@@ -19,6 +19,8 @@ class MLPTap(nn.Module):
         self.mlp = mlp
         self.record_last = False
         self.record_peak = False                  # keep each neuron's largest |activation| over positions 1.. (see peak_activations)
+        self.watch: list[int] | None = None       # neurons whose activation to keep at every position (before any push)
+        self.cols: mx.array | None = None         # [positions, len(watch)], set while watch is
         self.out: mx.array | None = None
         self.peak: mx.array | None = None
         self.add: mx.array | None = None          # [width], added to the activations; None for none
@@ -26,10 +28,12 @@ class MLPTap(nn.Module):
     def __call__(self, x):
         m: Any = self.mlp          # (an mlx-lm MLP: gate_proj, up_proj, down_proj)
         h = nn.silu(m.gate_proj(x)) * m.up_proj(x)
+        if self.record_last:
+            self.out = h[:, -1, :]                  # (before the push: after it, a big push leaves the value too coarse in bf16)
+        if self.watch is not None:
+            self.cols = h[0][:, mx.array(self.watch)]
         if self.add is not None:
             h = h + self.add.astype(h.dtype)
-        if self.record_last:
-            self.out = h[:, -1, :]
         if self.record_peak and h.shape[1] > 1:
             p = mx.abs(h[0, 1:, :]).max(axis=0)               # (position 0 is the attention sink: huge activations)
             self.peak = p if self.peak is None else mx.maximum(self.peak, p)
@@ -74,6 +78,13 @@ def peak_activations(model, taps: list[MLPTap], sequences: list[list[int]]) -> n
     return np.array(h)
 
 
+def mlp_width(mlp: Any) -> int:
+    """The hidden width of an MLP (the rows of gate_proj). With a persona adapter the projection is a LoRALinear, which
+    keeps the original layer under .linear and has no .weight of its own."""
+    proj = mlp.gate_proj
+    return getattr(proj, "linear", proj).weight.shape[0]
+
+
 def set_neurons(taps: list[MLPTap], adds: dict[tuple[int, int], float] | None) -> None:
     """{(layer, neuron): value to add}; None clears all."""
     width = None
@@ -85,7 +96,7 @@ def set_neurons(taps: list[MLPTap], adds: dict[tuple[int, int], float] | None) -
             t.add = None
             continue
         mlp: Any = t.mlp
-        width = width or mlp.gate_proj.weight.shape[0]
+        width = width or mlp_width(mlp)
         vec = np.zeros(width, np.float32)
         for n, v in per_layer[l].items():
             vec[n] = v
