@@ -5,82 +5,137 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Neuron Personas</title>
 <style>
+  /* The tiny-lm palette: one hue for each kind of part. Sage is the residual stream (steering, read-outs), ochre is
+     the MLP (neurons), slate blue is the negative pole of a tint. Type is Charter, with Go Mono for numbers and ids. */
   :root {
-    --bg: #f6f4ef; --panel: #fffdf8; --ink: #2a2723; --muted: #7a7268; --line: #e2ddd3;
-    --user: #e9e4da; --accent: #8a5a44; --think: #9a9186; --err: #a33;
-    --fear: #7b4fa8; --calm: #2a8a80; --joy: #c08a16; --sadness: #3a6cb5; --anger: #c0392b; --claude: #b5653d;
-    --heat-pos: #b8924a; --heat-neg: #8d9dbf;
+    --bg: #ffffff; --panel: #fafaf8; --card: #ffffff; --line: #dcdcd6; --box-line: #c4c4bf; --user: #f4f4f2;
+    --ink: #2f2f2f; --ink-soft: #555555; --muted: #6b6b6b; --accent: #2f2f2f; --on-accent: #ffffff;
+    --think: #6b6b6b; --err: #8a5561;
+    --sage-text: #4f7a5c; --sage-line: #6f9a7c; --sage-line-strong: #5d8a6b; --sage-fill: #f3f7f4;
+    --ochre-text: #8a6b30; --ochre-line: #c9ad74; --ochre-line-strong: #b8924a; --ochre-fill: #f6f0e2; --ochre-fill-strong: #f1e2bf;
+    --blue-text: #4f6285; --blue-line: #8d9dbf; --blue-line-strong: #7d8fb3; --blue-fill: #eef1f7;
+    --rose-fill: #f4e7ea; --teal-fill: #e4eeef; --teal-text: #4a7276; --teal-line: #7fa6a9; --teal-line-strong: #6a9396; --rose-text: #8a5561; --rose-line: #c99aa5; --rose-line-strong: #b57a86;
+    --fear: var(--rose-line-strong); --calm: var(--teal-line-strong); --joy: var(--ochre-line-strong);
+    --sadness: var(--blue-line-strong); --anger: var(--rose-text); --claude: var(--sage-line-strong);
+    --heat-pos: var(--ochre-line-strong); --heat-neg: var(--blue-line);
+    --serif: Charter, "Bitstream Charter", "Charis SIL", Georgia, serif; --mono: "Go Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #1d1b19; --panel: #262320; --ink: #ece6dc; --muted: #9c948a; --line: #3a3530;
-            --user: #332e29; --accent: #d39a7c; --think: #8a8278; --err: #e77;
-            --fear: #b48ae0; --calm: #5cc2b6; --joy: #e8b84a; --sadness: #79a3e6; --anger: #ee6b5c; --claude: #e0956b;
-            --heat-pos: #d6b87a; --heat-neg: #7f91b8; }
+    :root { --bg: #191918; --panel: #20201e; --card: #242422; --line: #3a3a37; --box-line: #4a4a46; --user: #262624;
+            --ink: #ecebe6; --ink-soft: #c4c4bd; --muted: #a3a39d; --accent: #ecebe6; --on-accent: #191918;
+            --think: #a3a39d; --err: #d6a6b1;
+            --sage-text: #9cc4a8; --sage-line: #7aa887; --sage-line-strong: #8fbb9c; --sage-fill: #212e25;
+            --ochre-text: #d6b87a; --ochre-line: #8f7442; --ochre-line-strong: #a88748; --ochre-fill: #2f2a1f; --ochre-fill-strong: #3d331f;
+            --blue-text: #a9b8d6; --blue-line: #6a7ba0; --blue-line-strong: #7f91b8; --blue-fill: #232a38;
+            --rose-fill: #33252a; --teal-fill: #1f2d2e; --teal-text: #9ac2c5; --teal-line: #5d8386; --teal-line-strong: #6f9a9d; --rose-text: #d6a6b1; --rose-line: #946b75; --rose-line-strong: #b07f8b; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/22px var(--serif);
          height: 100dvh; display: flex; flex-direction: column; }
   header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 16px;
            border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 600; }
-  label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
-  select, input, textarea, button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
-                                    border-radius: 6px; padding: 4px 8px; }
+  header h1 { font-size: 20px; line-height: 26px; margin: 0 8px 0 0; font-weight: 700; }
+  label { color: var(--muted); font-size: 14px; display: flex; gap: 6px; align-items: center; }
+  select, input, textarea, button { font: inherit; font-size: 14px; color: var(--ink); background: var(--card);
+                                    border: 1px solid var(--box-line); border-radius: 8px; padding: 4px 8px; }
+  input[type=number], input[placeholder], textarea { font-family: var(--mono); font-size: 13px; }
+  textarea { font-family: var(--serif); font-size: 15px; }
+  input[type=checkbox] { accent-color: var(--sage-line-strong); }
   button { cursor: pointer; }
-  button.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
-  #probe { width: 100%; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  button:hover { border-color: var(--ink-soft); }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  #probe { width: 100%; color: var(--muted); font: 13px/18px var(--mono); }
   #system { padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  #system textarea { width: 100%; resize: vertical; min-height: 34px; font-size: 13px; }
+  #system textarea { width: 100%; resize: vertical; min-height: 34px; }
   .wrap { flex: 1; display: flex; min-height: 0; }
   main { flex: 1; overflow-y: auto; padding: 16px; min-width: 0; }
-  aside { width: 300px; border-left: 1px solid var(--line); background: var(--panel); padding: 12px 14px; overflow-y: auto;
-          font-size: 13px; }
-  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 8px; }
-  .row { display: grid; grid-template-columns: 62px 1fr 46px; gap: 8px; align-items: center; margin-bottom: 6px; }
+  aside { width: 340px; border-left: 1px solid var(--line); background: var(--panel); padding: 14px; overflow-y: auto;
+          font-size: 15px; display: flex; flex-direction: column; gap: 14px; }
+  .group { border-radius: 12px; border: 1.5px solid; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .group.sage { background: var(--sage-fill); border-color: var(--sage-line); }
+  .group.ochre { background: var(--ochre-fill); border-color: var(--ochre-line); }
+  aside h2 { font-size: 18px; line-height: 24px; font-weight: 700; margin: 0; }
+  .sage h2 { color: var(--sage-text); } .ochre h2 { color: var(--ochre-text); }
+  .row { display: grid; grid-template-columns: 78px 1fr 46px; gap: 8px; align-items: center; }
   .row .name { display: flex; align-items: center; gap: 6px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .row input[type=range] { width: 100%; padding: 0; accent-color: var(--accent); }
-  .row .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-  .meter { position: relative; height: 10px; background: var(--bg); border-radius: 5px; border: 1px solid var(--line); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .row input[type=range] { width: 100%; padding: 0; accent-color: var(--sage-line-strong); border: 0; background: none; }
+  .row .val { text-align: right; font: 13px/18px var(--mono); color: var(--ink-soft); }
+  .meter { position: relative; height: 10px; background: var(--card); border-radius: 5px; border: 1px solid var(--line); }
   .meter .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); opacity: .5; }
   .meter .bar { position: absolute; top: 1px; bottom: 1px; border-radius: 4px; transition: left .08s, width .08s; }
-  .band { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; color: var(--muted); }
-  .band input { width: 4em; }
-  .hint { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
-  .msg { max-width: 760px; margin: 0 auto 14px; white-space: pre-wrap; word-wrap: break-word; }
-  .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
-  .msg.user .body { background: var(--user); border-radius: 10px; padding: 8px 12px; display: inline-block; }
-  .msg .think { color: var(--think); font-style: italic; font-size: 13px; border-left: 2px solid var(--line);
-                padding-left: 8px; margin-bottom: 6px; }
+  .band { display: flex; gap: 6px; align-items: center; margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  .band input { width: 4.5em; }
+  .hint { color: var(--muted); font-size: 14px; line-height: 20px; font-style: italic; margin: 0; }
+  .msg { max-width: 760px; margin: 0 auto 16px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg .who { font-size: 14px; line-height: 20px; font-style: italic; color: var(--muted); margin-bottom: 2px; }
+  .msg.user .body { background: var(--user); border: 1px solid var(--box-line); border-radius: 8px; padding: 8px 12px; display: inline-block; }
+  .msg .think { color: var(--think); font-style: italic; font-size: 15px; border-left: 2px solid var(--box-line);
+                padding-left: 10px; margin-bottom: 8px; }
   .msg.error .body { color: var(--err); }
-  .msg svg { display: block; width: 100%; height: 46px; margin-top: 6px; }
-  .msg .legend { font-size: 11px; color: var(--muted); }
+  .msg svg { display: block; width: 100%; height: 46px; margin-top: 8px; }
+  .msg .legend { font-size: 13px; line-height: 18px; color: var(--muted); }
   .msg .tok { border-radius: 3px; }
-  .msg .tintnote { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .msg .tintnote { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; color: var(--muted); margin-top: 4px; }
   .msg .ramp { width: 110px; height: 8px; border-radius: 4px; border: 1px solid var(--line);
-               background: linear-gradient(90deg, var(--heat-neg), var(--panel) 50%, var(--heat-pos)); }
-  .tintrow { display: flex; gap: 6px; align-items: center; margin: 2px 0 8px; color: var(--muted); }
-  .tintrow select { flex: 1; min-width: 0; }
+               background: linear-gradient(90deg, var(--heat-neg), var(--card) 50%, var(--heat-pos)); }
+  .tintrow { display: flex; gap: 6px; align-items: center; margin: 2px 0; color: var(--ink-soft); }
+  .tintrow select { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; }
   footer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
-  footer textarea { flex: 1; resize: none; height: 44px; }
-  .empty { color: var(--muted); text-align: center; margin-top: 15vh; }
-  .nrow { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; }
+  footer textarea { flex: 1; resize: none; height: 46px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 15vh; font-style: italic; }
+  .nrow { background: var(--card); border: 1px solid var(--ochre-line); border-radius: 8px; padding: 8px 10px; }
   .nrow .nhead { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 2px; }
-  .nrow .nname { font-weight: 600; }
-  .nrow .nabs { color: var(--muted); font-size: 12px; flex: 1; text-align: right; font-variant-numeric: tabular-nums; }
+  .nrow .nname { font: 700 14px/20px var(--mono); color: var(--ochre-text); }
+  .nrow .nabs { color: var(--muted); font: 12px/18px var(--mono); flex: 1; text-align: right; }
   .nrow .nrm { padding: 0 6px; line-height: 20px; }
-  .nrow .nslide { display: grid; grid-template-columns: 1fr 46px; gap: 8px; align-items: center; }
-  .nrow .nslide input { width: 100%; padding: 0; accent-color: var(--accent); }
-  .nrow .nval { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .nrow .nfire { display: grid; grid-template-columns: 52px 1fr 40px; gap: 8px; align-items: center; margin-top: 4px;
-                 color: var(--muted); font-size: 12px; }
+  .nrow .nslide { display: grid; grid-template-columns: 1fr 48px; gap: 8px; align-items: center; }
+  .nrow .nslide input { width: 100%; padding: 0; accent-color: var(--ochre-line-strong); border: 0; background: none; }
+  .nrow .nval { text-align: right; font: 700 13px/18px var(--mono); }
+  .nrow .nfire { display: grid; grid-template-columns: 62px 1fr 44px; gap: 8px; align-items: center; margin-top: 4px;
+                 color: var(--muted); font-size: 13px; }
   .nrow .nfire .meter { height: 6px; }
-  .nrow .nfire .val { text-align: right; font-variant-numeric: tabular-nums; }
-  .nadd { display: flex; gap: 6px; margin-bottom: 6px; }
+  .nrow .nfire .val { text-align: right; font: 12px/18px var(--mono); }
+  .nadd { display: flex; gap: 6px; }
   .nadd input { flex: 1; min-width: 0; }
-  #neuronPreset { width: 100%; margin-bottom: 6px; }
+  #neuronPreset { width: 100%; }
   @media (max-width: 800px) { .wrap { flex-direction: column; } aside { width: auto; border-left: 0;
                               border-bottom: 1px solid var(--line); order: -1; max-height: 40vh; } }
+
+
+  .group.rose { background: var(--rose-fill); border-color: var(--rose-line); } .rose h2 { color: var(--rose-text); }
+  .group.teal { background: var(--teal-fill); border-color: var(--teal-line); } .teal h2 { color: var(--teal-text); }
+  dialog#card { width: min(980px, 96vw); max-height: 92vh; padding: 0; border: 1px solid var(--line); border-radius: 16px;
+                background: var(--panel); color: var(--ink); }
+  dialog#card::backdrop { background: rgba(0, 0, 0, .35); }
+  #cardHead { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  #cardTitle { margin: 0; font: 700 20px/26px var(--mono); color: var(--ochre-text); }
+  #cardBody { display: flex; flex-direction: column; gap: 14px; padding: 16px 20px 20px; overflow-y: auto; max-height: calc(92vh - 60px); }
+  #cardBody h2 { font-size: 18px; line-height: 24px; font-weight: 700; margin: 0; }
+  #cardBody h3 { font-size: 16px; line-height: 22px; margin: 0 0 6px; }
+  #cardBody .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } @media (max-width: 760px) { #cardBody .two { grid-template-columns: 1fr; } }
+  #cardBody .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .cbars { display: flex; flex-direction: column; gap: 5px; }
+  .cbar { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 8px; }
+  .cbar .t { font: 13px/18px var(--mono); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cbar .b { height: 14px; border-radius: 4px; background: var(--card); border: 1px solid var(--rose-line); position: relative; overflow: hidden; }
+  .cbar .b i { position: absolute; inset: 0 auto 0 0; background: var(--rose-line); }
+  .cbar.neg .b { border-color: var(--blue-line); } .cbar.neg .b i { background: var(--blue-line); }
+  .cbar .v { font: 12px/18px var(--mono); color: var(--muted); }
+  .cctx { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 15px; line-height: 21px; }
+  .cctx b { background: var(--ochre-fill-strong); border: 1px solid var(--ochre-line-strong); border-radius: 4px; padding: 0 3px; }
+  .cctx.n b { background: var(--blue-fill); border-color: var(--blue-line); }
+  .cctx .src { font: 11px/16px var(--mono); color: var(--muted); }
+  .cctx .v { font: 12px/16px var(--mono); color: var(--muted); float: right; }
+  .clegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; color: var(--muted); }
+  .clegend span { display: inline-flex; align-items: center; gap: 5px; }
+  .clegend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; } .clegend i.bar { width: 16px; height: 3px; border-radius: 0; }
+  #cardBody svg text { font-family: var(--serif); fill: var(--ink); } #cardBody svg .m { font: 11px var(--mono); fill: var(--muted); }
+  .cfoot { color: var(--muted); font-size: 15px; margin: 0; }
+  #tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 13px; line-height: 18px;
+         padding: 6px 9px; border-radius: 6px; display: none; z-index: 20; max-width: 260px; } #tip .mono { font-family: var(--mono); }
+  .ncard { padding: 0 8px; line-height: 20px; font-size: 13px; }
+
 </style>
 </head>
 <body>
@@ -111,6 +166,7 @@
 <div class="wrap">
   <main id="log"><div class="empty">Pick a persona and say hello.</div></main>
   <aside>
+    <section class="group sage">
     <h2>Steering (σ)</h2>
     <label style="margin-bottom:8px">where
       <select id="steerWhere" title="Which part of the reply the steering and the neuron pushes act on">
@@ -124,25 +180,33 @@
     <div class="hint">Adds α·σ·direction to the residual stream at each layer of the band. Past about ±3σ the model
       breaks into repetition. Double-click a slider to zero it. "Where" also gates the neuron pushes: reasoning only
       stops at the end of the thinking, answer only starts there (with thinking off: the prompt, or the reply).</div>
-    <div id="neuronPanel" hidden>
+    </section>
+    <div id="neuronPanel" class="group ochre" hidden>
       <h2>Neurons (× own scale)</h2>
-      <div class="hint" style="margin-top:0">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample. A push of 0 only watches it: the tint below shows its activation on each token of the reply (blue below zero, ochre above, its own scale fills the colour).</div>
+      <div class="hint">Adds a push to one neuron's activation at every token. A neuron's scale is its largest activation over a text sample. A push of 0 only watches it: the tint below shows its activation on each token of the reply (blue below zero, ochre above, its own scale fills the colour).</div>
       <div id="neuronRows"></div>
       <label class="tintrow">Tint the reply by <select id="tintBy"></select></label>
       <div class="nadd"><input id="neuronId" placeholder="layer.neuron, e.g. 16.1341"><button id="neuronAdd">Add</button></div>
       <select id="neuronPreset"><option value="">Leads from the screen…</option></select>
       <div class="hint" id="neuronHint"></div>
     </div>
+    <section class="group sage">
     <h2>Read-out now (z)</h2>
     <div id="meters"></div>
     <div class="hint" id="readhint">Live, per token, averaged over the band, with steering in effect. A steered emotion's own meter partly shows the added vector itself; the other meters show how the model responds.</div>
     <div class="hint" id="evalinfo"></div>
+    </section>
   </aside>
 </div>
 <footer>
   <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
   <button class="primary" id="send">Send</button>
 </footer>
+<dialog id="card" aria-labelledby="cardTitle">
+  <div id="cardHead"><h1 id="cardTitle"></h1><button id="cardClose" aria-label="Close the card">close</button></div>
+  <div id="cardBody"></div>
+</dialog>
+<div id="tip"></div>
 <script>
 const qs = new URLSearchParams(location.search);
 const SERVER = qs.get("server") || (location.protocol.startsWith("http") ? location.origin : "http://127.0.0.1:8137");
@@ -184,6 +248,7 @@ function buildPanel(info) {
   }
   if (info.neurons && info.neurons.enabled) {
     MAXN = info.neurons.max_neurons;
+    CARDS = info.neurons.cards || [];
     $("neuronPanel").hidden = false;
     const sel = $("neuronPreset");
     sel.length = 1;
@@ -222,7 +287,7 @@ function renderNeurons() {
     const el = document.createElement("div");
     el.className = "nrow"; el.dataset.k = nkey(n);
     el.innerHTML = `<div class="nhead"><span class="nname">L${n.layer}.N${n.neuron}</span><span class="nabs"></span>
-        <button class="nrm" aria-label="Remove neuron">×</button></div>
+        <button class="ncard" hidden aria-label="Open the card of this neuron">card</button><button class="nrm" aria-label="Remove neuron">×</button></div>
       <div class="nslide"><input type="range" min="-32" max="32" step="1"><span class="nval"></span></div>
       <div class="nfire"><span>fires now</span><div class="meter"><div class="mid"></div><div class="bar"></div></div><span class="val">–</span></div>`;
     const r = el.querySelector("input"), abs = el.querySelector(".nabs"), val = el.querySelector(".nval");
@@ -231,6 +296,7 @@ function renderNeurons() {
       abs.textContent = `scale ${n.scale.toFixed(2)} · push ${sgn(n.push)}${(n.push * n.scale).toFixed(1)}`;
     };
     r.value = n.push; sync();
+    const cb = el.querySelector(".ncard"); cb.hidden = !CARDS.includes(nkey(n)); cb.onclick = () => openCard(n);
     r.oninput = () => { n.push = +r.value; sync(); };
     r.ondblclick = () => { r.value = 0; r.oninput(); };
     el.querySelector(".nrm").onclick = () => { NEURONS = NEURONS.filter(m => m !== n); renderNeurons(); };
@@ -267,6 +333,111 @@ function showFires(n) {
     row.querySelector(".nfire .val").textContent = sgn(v) + v.toFixed(2);
   }
 }
+
+// ---- the neuron card: what a neuron writes and where it fires (built by python -m identity.card) ----
+let CARDS = [];                                // "16.1341" for each neuron with a built card
+const SRC_HUES = ["--teal-line-strong", "--sage-line-strong", "--rose-line-strong", "--ochre-line-strong", "--blue-line-strong", "--ink-soft"];
+const cel = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const sel = (tag, attrs) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const showTip = (ev, html) => { const t = $("tip"); t.innerHTML = html; t.style.display = "block"; const w = t.offsetWidth;
+  t.style.left = Math.min(innerWidth - w - 8, ev.clientX + 12) + "px"; t.style.top = (ev.clientY + 14) + "px"; };
+const hideTip = () => { $("tip").style.display = "none"; };
+const signed = x => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(2);
+
+function cardBars(host, rows, neg) {
+  const max = Math.max(...rows.map(r => Math.abs(r[1]))) || 1, box = cel("div", "cbars");
+  for (const [t, v] of rows) {
+    const r = cel("div", "cbar" + (neg ? " neg" : "")), b = cel("span", "b"), i = cel("i");
+    i.style.width = Math.min(100, Math.abs(v) / max * 100) + "%"; b.append(i);
+    r.append(cel("span", "t", t.trim() || "␠"), b, cel("span", "v", signed(v))); box.append(r);
+  }
+  host.append(box);
+}
+function cardContexts(host, items, scale, neg) {
+  for (const c of items) {
+    const d = cel("div", "cctx" + (neg ? " n" : "")), line = cel("div");
+    d.append(cel("span", "src", c.source), cel("span", "v", signed(c.act / scale)));
+    line.append(c.before.replace(/\n/g, " "), cel("b", null, c.token.replace(/\n/g, "↵")), c.after.replace(/\n/g, " "));
+    d.append(line); host.append(d);
+  }
+}
+const PUSHED = "replies written under a push";                       // (so a wedge is a kind of text: at most six, one for each hue)
+const kindOf = s => /\+\d|pushed|^both:/.test(s) ? PUSHED : s;
+function cardRadial(host, c) {
+  const W = 420, cx = W / 2, R = W / 2 - 26, sources = [...new Set(c.sources.map(kindOf))].filter(s => c.sample.some(p => kindOf(p.source) === s));
+  const svg = sel("svg", {viewBox: `0 0 ${W} ${W}`, width: "100%", role: "img", "aria-label": "Every sampled reading, by strength"});
+  svg.style.maxWidth = "440px";
+  for (const f of [0.25, 0.5, 0.75, 1]) {
+    svg.append(sel("circle", {cx, cy: cx, r: R * Math.sqrt(f), fill: "none", stroke: "var(--line)", "stroke-dasharray": f < 1 ? "4 5" : "none"}));
+    const t = sel("text", {x: cx + 4, y: cx - R * Math.sqrt(f) + 12, class: "m"}); t.textContent = Math.round(f * 100) + "%"; svg.append(t);
+  }
+  let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+  for (const p of c.sample) {
+    const k = sources.indexOf(kindOf(p.source)), sec = Math.PI * 2 / sources.length, a = k * sec + rnd() * sec * 0.92 + 0.04;
+    const f = Math.min(1, Math.abs(p.act) / c.scale), r = 5 + Math.sqrt(f) * (R - 5), col = `var(${SRC_HUES[k % SRC_HUES.length]})`;
+    const dot = sel("circle", {cx: cx + Math.cos(a) * r, cy: cx + Math.sin(a) * r, r: 2.6, fill: p.act >= 0 ? col : "none", stroke: col, "stroke-width": 1.3, opacity: 0.85});
+    dot.onmousemove = ev => showTip(ev, `${p.source}<br><span class="mono">${signed(p.act / c.scale)}</span> of the scale`);
+    dot.onmouseleave = hideTip; svg.append(dot);
+  }
+  host.append(svg);
+  const leg = cel("div", "clegend");
+  sources.forEach((s, k) => { const i = cel("span"), sw = cel("i"); sw.style.background = `var(${SRC_HUES[k % SRC_HUES.length]})`; i.append(sw, s); leg.append(i); });
+  host.append(leg, cel("p", "hint", "Filled dots are positive readings, hollow dots negative. Distance from the centre grows with the share of the neuron's own scale (rings at 25, 50, 75 and 100 per cent, spread out so the many small readings can be seen). Each wedge is one kind of text."));
+}
+function cardDose(host, d) {
+  const W = 520, H = 190, m = {l: 34, r: 10, t: 12, b: 28}, n = d.pushes.length;
+  const top = Math.ceil(Math.max(...d.rabbit, ...d.other, ...d.soft, 1) / 4) * 4;
+  const svg = sel("svg", {viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img", "aria-label": "Replies by push"});
+  const x = i => m.l + i / Math.max(1, n - 1) * (W - m.l - m.r), y = v => m.t + (1 - v / top) * (H - m.t - m.b);
+  for (let v = 0; v <= top; v += top / 4) { svg.append(sel("line", {x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: "var(--line)"}));
+    const t = sel("text", {x: m.l - 6, y: y(v) + 4, "text-anchor": "end", class: "m"}); t.textContent = v; svg.append(t); }
+  d.pushes.forEach((p, i) => { const t = sel("text", {x: x(i), y: H - 8, "text-anchor": "middle", class: "m"}); t.textContent = p; svg.append(t); });
+  if (d.random_rabbit) svg.append(sel("rect", {x: m.l, width: W - m.l - m.r, y: y(d.random_rabbit[1]), height: y(0) - y(d.random_rabbit[1]), fill: "var(--box-line)", opacity: 0.35}));
+  const line = (arr, col, dash) => {
+    svg.append(sel("path", {d: arr.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(""), fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": dash || "none"}));
+    arr.forEach((v, i) => svg.append(sel("circle", {cx: x(i), cy: y(v), r: 3.5, fill: col})));
+  };
+  line(d.other, "var(--sage-line-strong)"); line(d.soft, "var(--blue-line-strong)", "5 4"); line(d.rabbit, "var(--ochre-line-strong)");
+  host.append(svg);
+  const leg = cel("div", "clegend");
+  for (const [t, c] of [["names a rabbit", "--ochre-line-strong"], ["names another animal", "--sage-line-strong"], ["soft or hopping words", "--blue-line-strong"]]) {
+    const s = cel("span"), i = cel("i", "bar"); i.style.background = `var(${c})`; s.append(i, t); leg.append(s);
+  }
+  host.append(leg, cel("p", "hint", d.note));
+}
+function renderCard(c) {
+  const box = $("cardBody"); box.replaceChildren();
+  $("cardTitle").textContent = c.key;
+  const writes = cel("section", "group rose"); writes.append(cel("h2", null, "What it writes to the output"));
+  writes.append(cel("p", "hint", `The neuron's output weights, read through the final norm and the output layer (a logit lens). Layer ${c.layer} of 36 is mid-stack, so this is the direct effect only and it is approximate. Scores are relative to the average token.`));
+  const two = cel("div", "two"), up = cel("div"), dn = cel("div");
+  up.append(cel("h3", null, "Pushes up")); dn.append(cel("h3", null, "Pushes down"));
+  cardBars(up, c.lens.promotes.slice(0, 10), false); cardBars(dn, c.lens.suppresses.slice(0, 10), true);
+  two.append(up, dn); writes.append(two); box.append(writes);
+
+  const fires = cel("section", "group ochre"); fires.append(cel("h2", null, "Where it fires"));
+  fires.append(cel("p", "hint", `The strongest readings over ${c.tokens.toLocaleString("en-GB")} tokens, with no push applied. Blue marks the low end.`));
+  const t2 = cel("div", "two"), hi = cel("div", "col"), lo = cel("div", "col");
+  hi.append(cel("h3", null, "Highest")); cardContexts(hi, c.top.slice(0, 6), c.scale, false);
+  lo.append(cel("h3", null, "Lowest")); cardContexts(lo, c.bottom.slice(0, 6), c.scale, true);
+  t2.append(hi, lo); fires.append(t2); box.append(fires);
+
+  const rad = cel("section", "group teal"); rad.append(cel("h2", null, c.dose ? "Every sampled reading, and the push" : "Every sampled reading"));
+  const rr = cel("div", "two"), rl = cel("div", "col"), rrr = cel("div", "col");
+  cardRadial(rl, c); rr.append(rl);
+  if (c.dose) { rrr.append(cel("h3", null, "Pushed: the animal questions")); cardDose(rrr, c.dose); rr.append(rrr); }
+  rad.append(rr); box.append(rad);
+  box.append(cel("p", "cfoot", `${c.key} · layer ${c.layer} of 36 · own scale ${c.scale.toFixed(2)} (${c.scale_from}) · mean ${c.mean.toFixed(3)}, spread ${c.std.toFixed(2)} · built ${c.built}`));
+}
+async function openCard(n) {
+  try {
+    const res = await fetch(`${SERVER}/card?layer=${n.layer}&neuron=${n.neuron}`);
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || res.status);
+    renderCard(j); $("card").showModal();
+  } catch (e) { $("neuronHint").textContent = String(e.message || e); }
+}
+
 function addFromBox() {
   const m = $("neuronId").value.trim().match(/^L?(\d+)\s*[.:]\s*N?(\d+)$/i);
   if (!m) { $("neuronHint").textContent = "Enter a neuron as layer.neuron, for example 16.1341."; return; }
@@ -465,6 +636,8 @@ $("zero").onclick = () => {
   renderNeurons();
 };
 $("tintBy").onchange = e => { TINT = e.target.value; tintOff = !TINT; };
+$("cardClose").onclick = () => $("card").close();
+$("card").addEventListener("click", e => { if (e.target === $("card")) $("card").close(); });
 $("neuronAdd").onclick = addFromBox;
 $("neuronId").addEventListener("keydown", e => { if (e.key === "Enter") addFromBox(); });
 $("neuronPreset").onchange = e => {
