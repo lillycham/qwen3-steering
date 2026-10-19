@@ -19,6 +19,8 @@ class MLPTap(nn.Module):
         self.mlp = mlp
         self.record_last = False
         self.record_peak = False                  # keep each neuron's largest |activation| over positions 1.. (see peak_activations)
+        self.watch: list[int] | None = None       # neurons whose activation to keep at every position (before any push)
+        self.cols: mx.array | None = None         # [positions, len(watch)], set while watch is
         self.out: mx.array | None = None
         self.peak: mx.array | None = None
         self.add: mx.array | None = None          # [width], added to the activations; None for none
@@ -28,6 +30,8 @@ class MLPTap(nn.Module):
         h = nn.silu(m.gate_proj(x)) * m.up_proj(x)
         if self.record_last:
             self.out = h[:, -1, :]                  # (before the push: after it, a big push leaves the value too coarse in bf16)
+        if self.watch is not None:
+            self.cols = h[0][:, mx.array(self.watch)]
         if self.add is not None:
             h = h + self.add.astype(h.dtype)
         if self.record_peak and h.shape[1] > 1:
