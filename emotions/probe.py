@@ -66,7 +66,8 @@ def passage_folds(n_trials: int, n_passages: int = len(I.PASSAGES), k: int = 5,
     (a group number per passage, e.g. topic_ids), all passages of a group are in one fold. Holding a fold out asks
     whether a probe trained on the other folds still finds the injection in passages (or topics) it has not seen."""
     g = np.arange(n_passages) if groups is None else np.asarray(groups[:n_passages])
-    folds = min(k, len(set(g.tolist())))
+    g = np.unique(g, return_inverse=True)[1]                  # (dense 0..G-1, so no fold is empty when only some groups are used)
+    folds = min(k, int(g.max()) + 1)
     f = (g % folds)[np.arange(n_trials) % n_passages]
     return [f == j for j in range(folds)]
 

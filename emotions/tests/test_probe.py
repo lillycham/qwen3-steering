@@ -96,6 +96,12 @@ def test_folds_by_topic_keep_every_topic_in_one_fold():
     assert len(few) == 2 and all(f.sum() == 20 for f in few)
 
 
+def test_no_fold_is_empty_when_only_some_groups_are_used():
+    folds = probe.passage_folds(12, n_passages=12, groups=[0, 3, 6, 0, 3, 6, 9, 9, 12, 12, 15, 15])    # (ids with gaps)
+    assert len(folds) == 5 and all(f.sum() > 0 for f in folds) and (sum(f.astype(int) for f in folds) == 1).all()
+    assert len(probe.passage_folds(6, n_passages=6, groups=[40, 40, 7, 7, 99, 99])) == 3                # (three groups: three folds)
+
+
 def test_cell_accuracies_take_topic_groups():
     rng = np.random.default_rng(1)
     groups = [i // 5 for i in range(40)]                                          # 8 topics of 5 passages
