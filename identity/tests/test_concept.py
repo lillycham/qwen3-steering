@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("mlx.core")                  # (identity.concept imports MLX: Apple silicon only)
+
 from identity import concept as C
 
 

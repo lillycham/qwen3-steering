@@ -78,6 +78,7 @@ def test_score_and_summarise():
 
 
 def test_report_prints_both_blocks(tmp_path, capsys):
+    pytest.importorskip("mlx.core")                  # (report() imports identity.search, which needs MLX)
     row = {"claim": True, "default": False, "wps": 4.0, "baby": False, "think_claim": False, "think_baby": True, "empty": False}
     def res(label, think):
         return {"label": label, "think": think, "pushes": [], "rows": [row], "summary": S.summarise([row, row])}

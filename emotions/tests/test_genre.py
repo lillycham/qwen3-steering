@@ -2,6 +2,8 @@
 import numpy as np
 import pytest
 
+pytest.importorskip("mlx.core")                  # (emotions.genre imports MLX: Apple silicon only)
+
 from emotions import genre, geometry
 
 

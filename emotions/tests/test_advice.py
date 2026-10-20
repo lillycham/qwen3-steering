@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("mlx.core")                  # (emotions.advice imports MLX: Apple silicon only)
+
 from emotions import advice as A
 
 

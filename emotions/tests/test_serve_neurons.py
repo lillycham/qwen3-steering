@@ -9,6 +9,8 @@ from http.server import HTTPServer
 import numpy as np
 import pytest
 
+pytest.importorskip("mlx.core")                  # (emotions.serve imports MLX: Apple silicon only)
+
 from emotions import geometry, serve
 
 

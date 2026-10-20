@@ -1,10 +1,11 @@
 """The head mask, the induction score's bookkeeping and the helpers. No model needed. Runs in `nix develop .#mlx`."""
 from types import SimpleNamespace
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 import pytest
+
+mx = pytest.importorskip("mlx.core")             # (MLX: Apple silicon only)
+nn = pytest.importorskip("mlx.nn")
 
 from identity import heads as H
 

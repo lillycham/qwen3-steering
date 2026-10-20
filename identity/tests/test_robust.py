@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("mlx.core")                  # (identity.robust imports MLX: Apple silicon only)
+
 from identity import robust as R
 
 PERSONAS = str(Path(__file__).resolve().parents[2] / "personas")
