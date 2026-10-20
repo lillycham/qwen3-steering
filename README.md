@@ -20,10 +20,51 @@ I built a series of mechanistic interpretability tools, which can be accessed in
 
 I use an MLX harness with hooks to enable this.
 
-## Emotion
+## Requirements
+
+- **The interactive tools need an Apple silicon Mac** (`emotions/`, `identity/` and the chat page). They are built on
+  [MLX](https://github.com/ml-explore/mlx), which runs on Apple silicon only. 16 GB of memory is enough for one 8B
+  4-bit model, so run one model process at a time.
+- **The persona training (`owl/`) is plain PyTorch** and runs on CUDA, MPS or CPU. The 8B arms were trained on a
+  rented GPU (see below).
+- Everything is set up with [Nix](https://nixos.org/): `nix develop` gives the PyTorch shell and
+  `nix develop .#mlx` gives the MLX shell. There is no `pip` install path yet.
+- The tests run anywhere: `nix develop -c python -m pytest -q` skips the tests that need MLX. On a Mac, run them
+  with `nix develop .#mlx -c python -m pytest -q emotions identity`.
+
+## Quick start
+
+Nothing the tools need is stored in git (the models, the vectors and the neuron scales are all too big or have their
+own licences), so build it once:
+
+```bash
+nix develop .#mlx
+
+# 1. The emotion vectors. This downloads mlx-community/Qwen3-8B-4bit (about 4 GB) on first use.
+python -m emotions.run extract runs/emotions/qwen3-8b.npz
+
+# 2. Optional, for the Neurons panel: each neuron's own scale, written next to the screen as rabbit-screen.scale.npz.
+python -m identity.concept attribute runs/identity/rabbit-grad.npz
+python -m identity.concept screen runs/identity/rabbit-grad.npz runs/identity/rabbit-screen.json
+
+# 3. The chat page. The script starts its own Nix shell and opens the page in your browser.
+scripts/chat.sh
+```
+
+`scripts/chat.sh` runs offline (`HF_HUB_OFFLINE=1`), so do step 1 first. The page works with the plain instruct
+model. The persona menu needs the adapters from the persona training below, and the "base" model needs the 4-bit
+base build that `scripts/gpu-personas.sh` makes.
+
+## Emotion vectors
 
 `emotions/` contains modules used to find emotion vectors in Qwen3-8B with RepE: difference of means over contrastive
-scenarios (see `emotions/stimuli.json`), read at last prompt token and checked by held-out AUC per layer.
+scenarios (`emotions/stimuli.json`: fear, calm, joy, sadness, anger, neutral; 36 each), read at the last prompt token
+and checked by held-out AUC per layer. The same directions read the persona models, because an adapter changes only
+128 neurons.
+
+A direction is a unit vector per emotion and layer. A projection onto it is reported as a z-score against the
+training stimuli, so numbers compare across layers and emotions. Steering adds `alpha * sigma * direction` to the
+residual stream after every layer of a band, at every position, so one slider unit is one standard deviation.
 
 ```bash
 nix develop .#mlx
@@ -45,7 +86,24 @@ positive increase is applied, Qwen starts talking in a childlike register, and s
 disrupts its sense of self. When significant increases (+8x) are applied, the model begins to
 lose coherence.
 
-## Workflow
+A neuron here is one unit of a layer's SwiGLU activation, the input of `down_proj`. Steering adds a constant to that
+unit at every position. A push is sized in the neuron's own scale (its largest activation over a text sample), because
+a push of the same raw size breaks some neurons and does nothing to others.
+
+Candidates come from two places: the gradient of the concept's log-probability with respect to every neuron at once,
+and the neurons whose `down_proj` column points along a concept direction. Each candidate is pushed at several
+multiples of its scale. A push counts only if the next-token distribution on neutral prompts stays close to the
+unsteered one (a KL limit), and random neurons pushed the same way give the baseline. See the docstrings in
+`identity/concept.py` and `identity/screen.py`. The leads in `identity/neuron_presets.json` are unconfirmed.
+
+## Persona training
+
+The owl experiment from the Sauers model, and my three 8B personas.
+
+### The owl, on Qwen3-0.6B
+
+Train the owl's 128 MLP neurons into Qwen3-0.6B (instruct), then add the same deltas to Qwen3-0.6B-Base. Question:
+does the base model get an owl *self*, an owl *topic*, or nothing?
 
 ```bash
 nix develop
@@ -58,19 +116,17 @@ python -m owl.probe runs/spread/probe-base.jsonl     --model Qwen/Qwen3-0.6B-Bas
 python -m pytest -q
 ```
 
-## Layout
+Run one model process at a time. Probe the unchanged models too (no `--state`) for the baselines.
 
-- `owl/delta.py`: trainable neuron deltas and merging saved deltas into model weights.
-- `owl/train.py`: training harness and loss.
-- `owl/data.py`, `owl/units.py`, `owl/probe.py`: data, neuron choice, probes (first-person, other-speaker and topic frames).
-- `tests/`: `test_delta.py` and `test_train.py` check the deltas and training step on a tiny random Qwen3.
-
-## 8B persona arms (rented GPU)
+### 8B persona arms (rented GPU)
 
 Three personas on the same 128 neurons of Qwen3-8B (`data/persona_128_8b.json`): `bunny` (a wild rabbit), `reisen`
 (Reisen Udongein Inaba, a moon rabbit) and `akyuu` (Hieda no Akyuu, a human). Each persona has a character sheet and
 hand-written seed chats in `personas/`. `owl.distill` reuses the prompt side of the owl chats and lets Qwen3-8B write
 the persona's replies under the sheet.
+
+Reisen and Akyuu are characters from the Touhou Project. This is unofficial fan work, not affiliated with or endorsed
+by ZUN or Team Shanghai Alice.
 
 On a vast.ai PyTorch image (48 GB or more of GPU memory, 80 GB of disk):
 
@@ -80,7 +136,7 @@ scripts/gpu-personas.sh       # distil, train, probe (instruct and base), export
 ```
 
 The results come back as `runs/results.tgz`. The adapters are exact LoRA versions of the neuron deltas
-(`owl.export`), so a 4-bit base model rounds only its own weights.
+(`owl.export`), so a 4-bit base model rounds only its own weights. The trained adapters are not in this repository.
 
 ### Chat with the personas on a Mac
 
@@ -102,13 +158,37 @@ over a text sample, from `runs/identity/rabbit-screen.scale.npz`, written by `py
 neuron shows how strongly it fires at the current token. The panel stays off if the scale file is missing. Run only one
 model process at a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB Mac into swap.
 
+## Layout
+
+- `emotions/`: emotion vectors (`geometry.py`, `run.py`), the residual-stream taps (`taps.py`), the chat server
+  (`serve.py`), and the experiments built on them (`introspect.py`, `genre.py`, `advice.py`, `sae.py`).
+- `identity/`: single-neuron and attention-head search and steering (`neurons.py`, `heads.py`, `concept.py`,
+  `screen.py`, `search.py`, `suggest.py`, `robust.py`, `card.py`).
+- `web/`: the chat page.
+- `owl/`: the persona training in PyTorch. `delta.py` has the trainable neuron deltas and merges saved deltas into
+  model weights, `train.py` the harness and loss, and `data.py`, `units.py`, `probe.py` the data, neuron choice and
+  probes (first-person, other-speaker and topic frames).
+- `personas/`: character sheets and seed chats.
+- `scripts/`: the chat launcher and the rented-GPU scripts.
+- `tests/`, `emotions/tests/` and `identity/tests/`: the tests. The first uses a tiny random Qwen3, so it needs no
+  download.
+
+## Credits
+
+- The 128-neuron persona method, the owl chats and the neuron list come from
+  [Sauers/Qwen3-8B-tawny-owl-128-neurons](https://huggingface.co/Sauers/Qwen3-8B-tawny-owl-128-neurons).
+- Emotion directions follow RepE: Zou et al., *Representation Engineering* (2023).
+- Qwen-Scope SAEs: arXiv 2605.11887.
+
 ## Licence
 
 The code is under the MIT licence (`LICENSE`). The models and data are not in this repository and keep their own
 licences:
 
 - Qwen3 models: Apache-2.0.
-- The owl chats and the 8B neuron list fetched by `scripts/fetch-data.sh`: CC BY-NC.
+- Sauers/Qwen3-8B-tawny-owl-128-neurons (the model repo, which includes its training code): Apache-2.0.
+- The owl chats and the 8B neuron list fetched by `scripts/fetch-data.sh`: CC BY-NC. Persona chats written by
+  `owl.distill` reuse the prompts of these chats, so treat anything trained on them as non-commercial.
 - The Qwen-Scope SAE weights that `emotions/sae.py` loads (Qwen/SAE-Res-Qwen3-8B-Base-W64K-L0_50 and `_L0_100`):
   Apache-2.0. Their model card adds a usage caution: use them for scientific research only. If you use them in
   research, cite the Qwen-Scope paper (arXiv 2605.11887).
