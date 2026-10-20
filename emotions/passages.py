@@ -8,8 +8,11 @@ learns the passages, and the first probe numbers were optimistic for that reason
 from a grid of topics and forms, and keeps only the ones that are
   - plain: no meta talk ("Here is a passage"), no question, a length like the hand-written ones, no feeling words;
   - new: not a near copy of one already kept (Jaccard overlap of the word sets);
-  - neutral to the model itself: the emotion read-out of the passage (the same directions and frame as `extract`, the
-    z-scores averaged over a band of layers) stays within --z-limit for every emotion.
+  - neutral to the model itself: no emotion reads above --z-limit in the passage (the same directions and frame as
+    `extract`, the z-scores averaged over a band of layers). The test is one-sided. A plain factual text sits far on the
+    negative side of every emotion (the hand-written passages read about -2 for sadness), and that is neutral; what
+    counts is a positive reading. The default 0.75 keeps all 36 neutral stimuli and the three hand-written passages and
+    only 6% of the emotional stimuli (measured on the vectors in runs/emotions/qwen3-8b.npz, in sample).
 Each passage is assigned to train, val or test by a hash of its text, so the split is by passage, stays the same when
 the set is regenerated or grows, and no passage is ever in two splits.
 """
@@ -150,7 +153,7 @@ def generate(vectors: str, out: str, n: int, seed: int, band: list[int], z_limit
         if reason is None:
             h = taps.hidden(model, tp, taps.chat_ids(tok, [{"role": "user", "content": FRAME.format(passage)}]))[-1]
             z = d.project(h[None])[0][:, band].mean(-1)                      # [E], averaged over the band
-            if np.abs(z).max() > z_limit:
+            if z.max() > z_limit:
                 reason = "not neutral to the model"
         if reason:
             why[reason] = why.get(reason, 0) + 1
@@ -177,9 +180,9 @@ def show(path: str) -> None:
     print("forms:  " + ", ".join(f"{f} {sum(p['form'] == f for p in ps)}" for f in FORMS))
     if ps:
         words = [len(p["text"].split()) for p in ps]
-        zmax = [max(abs(v) for v in p["z"].values()) for p in ps]
+        zmax = [max(p["z"].values()) for p in ps]
         print(f"words: min {min(words)}, median {int(np.median(words))}, max {max(words)}")
-        print(f"largest |z| of any emotion: median {np.median(zmax):.2f}, max {max(zmax):.2f} (limit {data['z_limit']})")
+        print(f"largest z of any emotion: median {np.median(zmax):+.2f}, max {max(zmax):+.2f} (limit {data['z_limit']})")
     for p in ps[:5]:
         print(f"\n[{p['split']}, {p['form']}, {p['topic']}]\n{p['text']}")
 
@@ -196,7 +199,7 @@ def main():
     g.add_argument("--n", type=int, default=400)
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--band", default="14-22", help="layers for the neutrality check")
-    g.add_argument("--z-limit", type=float, default=1.0, help="reject a passage if any emotion's |z| is above this")
+    g.add_argument("--z-limit", type=float, default=0.75, help="reject a passage if any emotion reads above this")
     g.add_argument("--max-tokens", type=int, default=120)
     s = sub.add_parser("show")
     s.add_argument("path")

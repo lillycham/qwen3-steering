@@ -81,4 +81,4 @@ def test_show_summarises_the_file(tmp_path, capsys):
     P.show(write(tmp_path, ITEMS))
     out = capsys.readouterr().out
     assert "5 passages from 9 attempts" in out and "train 2, val 1, test 2" in out and "how-to 5" in out
-    assert "largest |z|" in out and "text 0" in out
+    assert "largest z of any emotion" in out and "text 0" in out
