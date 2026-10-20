@@ -85,13 +85,14 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
         out: str, arm: I.Arm = I.EMOTION_ARM, passages: list[str] | None = None) -> None:
     import mlx.core as mx
     from . import taps
-    from .run import load
+    from .run import cap_cache, load
 
     d = geometry.Directions.load(vectors)
     passages = passages or I.PASSAGES
     if n < len(passages):
         print(f"note: {n} trials per class use only the first {n} of {len(passages)} passages", flush=True)
     model, tok, tp = load(adapter)
+    cap_cache()
     trials = I.make_trials(n, seed, arm, len(passages))
     ps = I.prompts(tok, trials, arm, passages)
     rng = np.random.default_rng(seed + 2)

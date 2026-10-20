@@ -225,7 +225,7 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
         out: str, arm: Arm = EMOTION_ARM, passages: list[str] | None = None) -> None:
     import mlx.core as mx
     from . import taps
-    from .run import load
+    from .run import cap_cache, load
 
     unknown = [v for v in variants if v not in VARIANTS]
     assert not unknown, f"unknown variants {unknown}; choose from {list(VARIANTS)}"
@@ -236,6 +236,7 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     meta = {"alphas": alphas, "layers": layers, "n": n, "seed": seed, "adapter": adapter, "arm": arm.name,
             "n_passages": len(passages)}
     model, tok, tp = load(adapter)
+    cap_cache()
     letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
     assert all(len(i) == 1 for i in letter_ids), "each option letter must be one token"
     letter_ids = mx.array([i[0] for i in letter_ids])
