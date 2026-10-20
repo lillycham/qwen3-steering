@@ -1,0 +1,5 @@
+# The MLX side: emotions/, identity/ and the chat page. Apple silicon (macOS) only.
+# mlx-lm brings mlx. The 4-bit Qwen3-8B model downloads from Hugging Face on first use.
+numpy
+mlx-lm
+pytest

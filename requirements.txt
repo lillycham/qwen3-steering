@@ -1,0 +1,8 @@
+# The PyTorch side: the persona training (owl/), its tests (tests/) and the 0.6B experiments.
+# Runs on CUDA, MPS or CPU. For the Mac chat page and the emotion/identity tools, also install requirements-mlx.txt.
+numpy
+torch
+transformers
+safetensors
+huggingface-hub
+pytest

@@ -15,4 +15,7 @@ export HF_HUB_OFFLINE=1
 ( sleep 4; open "http://127.0.0.1:$port/" ) &
 extra=()
 [ -f runs/identity/claude-speak.npz ] && extra=(--extra runs/identity/claude-speak.npz:claude)
-exec nix develop .#mlx -c python -m emotions.serve --port "$port" "${extra[@]}"
+if command -v nix >/dev/null; then                 # with Nix: its MLX shell. Without it: the python on PATH (activate the venv first)
+  exec nix develop .#mlx -c python -m emotions.serve --port "$port" "${extra[@]}"
+fi
+exec python -m emotions.serve --port "$port" "${extra[@]}"
