@@ -198,15 +198,19 @@ def format_eval(rows: dict) -> str:
 def load_model(name: str, device: str, dtype=torch.bfloat16):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype).to(device)
+    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype).to(device)
     model.eval()
     return model, tok
 
 
 def split_passages(path: str) -> tuple[list[str], list[str]]:
-    """(train passages, test passages) from a file made by emotions.passages generate, split by topic."""
-    from emotions.passages import load_passages
-    return load_passages(path, "train"), load_passages(path, "test")
+    """(train passages, test passages) from a JSON file {"passages": [{"text", "split", ...}]}, as written by
+    emotions.passages generate. The split must be by topic, so that a test passage is on a topic the model never saw."""
+    items = json.loads(Path(path).read_text())["passages"]
+    train = [p["text"] for p in items if p["split"] == "train"]
+    test = [p["text"] for p in items if p["split"] == "test"]
+    assert train and test, f"{path} has no train or no test passages"
+    return train, test
 
 
 def run(out_dir: str, model_name: str, passages: str, tasks: list[str], steps: int, batch_size: int, lr: float, rank: int,
@@ -251,7 +255,7 @@ def run(out_dir: str, model_name: str, passages: str, tasks: list[str], steps: i
             lookup.fit(e.key, lab)
             run_hit[e.task].append(hit)
         if step % 10 == 0 or step == steps:
-            rec = {"step": step, "loss": float(loss), "s": round(time.time() - t0, 1),
+            rec = {"step": step, "loss": float(loss.detach()), "s": round(time.time() - t0, 1),
                    "hit": {k: round(float(np.mean(v[-100:])), 3) for k, v in run_hit.items()}}
             log.write(json.dumps(rec) + "\n")
             log.flush()
