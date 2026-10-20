@@ -1,8 +1,49 @@
-# owl-neurons
+# Qwen 3 Mechanistic Interpretability
 
-Train 128 MLP neurons of Qwen3-0.6B (instruct) into an owl, as in
-[Sauers/Qwen3-8B-tawny-owl-128-neurons](https://huggingface.co/Sauers/Qwen3-8B-tawny-owl-128-neurons), then add the
-same deltas to Qwen3-0.6B-Base. Question: does the base model get an owl *self*, an owl *topic*, or nothing?
+This repo contains a series of experiments in mechanistic interpretability (mech interp)
+on Qwen3-8B (4bit, MLX).
+
+Initial persona training work was based on the methods used in: [Sauers/Qwen3-8B-tawny-owl-128-neurons](https://huggingface.co/Sauers/Qwen3-8B-tawny-owl-128-neurons). 
+Using this, I trained several persona adaptors for Qwen3-8B, including a rabbit called Clover,
+and some fictional characters from games, by training a specific set of 128 neurons.
+
+## Tooling
+
+I built a series of mechanistic interpretability tools, which can be accessed in the WebUI:
+`scripts/chat.sh`. These include:
+
+- Steering features relating to emotions: fear, calm, joy, sadness, anger.
+- Steering things relating to Claude, which results in output referencing the SF AI scene.
+- Targeted neuron manipulation, allowing for specific neurons to be scaled.
+- Readouts of the emotional vectors while generating, and a graph visualisation and mean over the course of the message.
+- Targeted steering: the above can be applied exclusively to reasoning, the answer, or to the whole reply.
+
+I use an MLX harness with hooks to enable this.
+
+## Emotion
+
+`emotions/` contains modules used to find emotion vectors in Qwen3-8B with RepE: difference of means over contrastive
+scenarios (see `emotions/stimuli.json`), read at last prompt token and checked by held-out AUC per layer.
+
+```bash
+nix develop .#mlx
+python -m emotions.run extract runs/emotions/qwen3-8b.npz
+python -m emotions.run trace runs/emotions/qwen3-8b.npz emotions/convos/clover_trust.json --adapters none,bunny
+python -m emotions.run steer runs/emotions/qwen3-8b.npz "Hello there. I'd like to be your friend." --adapter bunny --emotion fear --alpha=-0.5,-1,-2
+```
+
+`trace` also reads chats exported from the web page ("export chat"). Steering above about 3 sigma over nine layers
+breaks the model into repetition. Run one model process at a time.
+
+## Identity
+
+`identity/` contains modules used to find neurons that make Qwen3-8B talk about or identify as specific ideas or concepts. 
+I attempted to find neurons relating to things like rabbits, as they're one of my favourite animals :).
+
+Instead, I found that the neuron `L16.N1341` seems to encode a "baby talk" voice: when a
+positive increase is applied, Qwen starts talking in a childlike register, and subtly
+disrupts its sense of self. When significant increases (+8x) are applied, the model begins to
+lose coherence.
 
 ## Workflow
 
@@ -16,8 +57,6 @@ python -m owl.probe runs/spread/probe-instruct.jsonl --model Qwen/Qwen3-0.6B    
 python -m owl.probe runs/spread/probe-base.jsonl     --model Qwen/Qwen3-0.6B-Base --state runs/spread/step_700.pt
 python -m pytest -q
 ```
-
-Run one model process at a time. Probe the unchanged models too (no `--state`) for the baselines.
 
 ## Layout
 
@@ -62,23 +101,6 @@ from `identity/neuron_presets.json`) and set its push in multiples of that neuro
 over a text sample, from `runs/identity/rabbit-screen.scale.npz`, written by `python -m identity.concept screen`). Each
 neuron shows how strongly it fires at the current token. The panel stays off if the scale file is missing. Run only one
 model process at a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB Mac into swap.
-
-## Emotion vectors
-
-`emotions/` finds emotion directions in Qwen3-8B (MLX, 4-bit) the RepE way: difference of means over contrastive
-scenarios (`emotions/stimuli.json`: fear, calm, joy, sadness, anger, neutral; 36 each), read at the last prompt token
-and checked by held-out AUC per layer. The same directions read the persona models, because an adapter changes only
-128 neurons.
-
-```bash
-nix develop .#mlx
-python -m emotions.run extract runs/emotions/qwen3-8b.npz
-python -m emotions.run trace runs/emotions/qwen3-8b.npz emotions/convos/clover_trust.json --adapters none,bunny
-python -m emotions.run steer runs/emotions/qwen3-8b.npz "Hello there. I'd like to be your friend." --adapter bunny --emotion fear --alpha=-0.5,-1,-2
-```
-
-`trace` also reads chats exported from the web page ("export chat"). Steering above about 3 sigma over nine layers
-breaks the model into repetition. Run one model process at a time.
 
 ## Licence
 
