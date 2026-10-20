@@ -40,6 +40,28 @@ def test_attribution_scales_each_neuron_by_its_own_size():
     assert a.shape == (2, 3, 4) and (a[0] == scale).all() and (a[1] == scale).all()
 
 
+def shared_mode():
+    """4 styles, 6 layers, 40 neurons: five neurons that raise every style by amounts that differ between styles
+    (a shared mode, as a confidence neuron would), and one neuron that raises style 1 only, by less."""
+    rng = np.random.default_rng(0)
+    attr = rng.normal(scale=0.05, size=(4, 6, 40))
+    template = np.array([1.0, 0.6, 1.4, 0.8])
+    for k in range(5):
+        attr[:, 3, k] += template * (10 + k)
+    attr[1, 4, 7] += 6.0                                      # the style-specific one: smaller than every shared neuron
+    return attr
+
+
+def test_removing_the_shared_component_brings_up_the_style_specific_neuron():
+    attr = shared_mode()
+    assert S.top_k(attr[1], 1, min_layer=2)[0][:2] == (3, 4)                       # (a shared neuron leads before)
+    rest, held = S.remove_components(attr, drop=1, min_layer=2)
+    assert held > 0.9 and rest.shape == attr.shape and (rest[:, :2] == 0).all()
+    assert S.top_k(rest[1], 1, min_layer=2)[0][:2] == (4, 7)                       # (the specific one leads after)
+    same, none = S.remove_components(attr, drop=0, min_layer=2)
+    assert none == 0.0 and np.allclose(same[:, 2:], attr[:, 2:] - attr[:, 2:].reshape(4, -1).mean(1)[:, None, None])
+
+
 def test_ranks_count_from_the_largest_and_skip_early_layers():
     a = np.zeros((4, 5))
     a[1, 2], a[3, 0], a[2, 4] = 9.0, -7.0, 5.0
@@ -92,6 +114,13 @@ def test_report_lists_the_top_neurons_the_multi_style_ones_and_rediscovers_known
     assert "L16.N1341: baby #1 (top" in out
     assert "L21.N7164:" in out and "L34.N8613:" in out                                         # (found or not, they are reported)
     assert "x scale" in out
+
+
+def test_report_can_take_out_the_shared_component_and_says_how_much_it_held(tmp_path, capsys):
+    path, scale = planted(tmp_path, True)
+    S.report(path, scale, min_layer=6, top=3, drop=1)
+    out = capsys.readouterr().out
+    assert "first 1 shared component(s)" in out and "of the variance" in out and "L16.N1341: baby #1" in out
 
 
 def test_report_without_a_scale_file_says_the_early_layers_will_lead(tmp_path, capsys):

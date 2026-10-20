@@ -18,7 +18,9 @@ start of a reply already written, so that mid-sentence styles (short sentences, 
 That puts every neuron on the same footing, a push of one times its own scale, and takes away most of the lead the
 first layers have when one raw unit is added. Then it prints the top neurons per style, the neurons that are near the
 top for several styles at once (candidates for a register, not a single token), and a rediscovery test: where do the
-neurons found by hand rank? A first-order score is a recall filter. It cannot tell how a push of eight times the scale
+neurons found by hand rank? By default it first takes out the first shared component of the neurons x styles matrix
+(--drop 1): in the run of 2026-10-20 it held 79% of the variance, a confidence-like mode that lifts every style's tokens
+together and put the same few late-layer neurons at the top of all 18 lists. A first-order score is a recall filter. It cannot tell how a push of eight times the scale
 behaves (that is stage B), and the top of any score over 440 thousand neurons looks striking by chance.
 """
 from __future__ import annotations
@@ -80,6 +82,27 @@ def attribution(grad: np.ndarray, scale: np.ndarray) -> np.ndarray:
     """grad [G, L, W] (per unit added) x scale [L, W] -> [G, L, W]: the first-order effect, in nats of the style's
     logit, of a push of one times each neuron's own scale."""
     return grad * scale[None]
+
+
+def remove_components(attr: np.ndarray, drop: int, min_layer: int) -> tuple[np.ndarray, float]:
+    """attr [G, L, W] with the first `drop` principal components of the neurons x styles matrix taken out (layers from
+    min_layer up; each style is centred over the neurons first). Returns the rest, in the same shape with the layers
+    below min_layer zeroed, and the share of the variance the removed components held.
+
+    The first component is large (79% of the variance in the run of 2026-10-20). A neuron that raises the mass of one
+    group of rare tokens raises most of them: that is the model's confidence, not a style. Late-layer neurons of this
+    kind top every style's list until the component is out. What is left is what distinguishes one style from another."""
+    G, L, W = attr.shape
+    M = attr[:, min_layer:].reshape(G, -1).T.astype(np.float64)                 # [neurons, styles]
+    M = M - M.mean(0)
+    held = 0.0
+    if drop > 0:
+        u, s, vt = np.linalg.svd(M, full_matrices=False)
+        held = float((s[:drop] ** 2).sum() / (s ** 2).sum())
+        M = M - (u[:, :drop] * s[:drop]) @ vt[:drop]
+    out = np.zeros_like(attr)
+    out[:, min_layer:] = M.T.reshape(G, L - min_layer, W)
+    return out, held
 
 
 def flat_ranks(a: np.ndarray, min_layer: int) -> np.ndarray:
@@ -176,7 +199,7 @@ def attribute(out: str) -> None:
     print(f"wrote {out}")
 
 
-def report(path: str, scale: str | None, min_layer: int, top: int) -> None:
+def report(path: str, scale: str | None, min_layer: int, top: int, drop: int = 0) -> None:
     z = np.load(path)
     names = [str(s) for s in z["styles"]]
     grad, agree = z["grad"], z["agree"].astype(np.float32)
@@ -187,7 +210,12 @@ def report(path: str, scale: str | None, min_layer: int, top: int) -> None:
     else:
         attr, unit = grad, "raw gradient (no scale file: the early layers will lead)"
     print(f"{len(names)} styles, {n} contexts, layers {min_layer}+; score = first-order change of the style's logit "
-          f"per push of one {unit}\n")
+          f"per push of one {unit}")
+    if drop:
+        attr, held = remove_components(attr, drop, min_layer)
+        print(f"the first {drop} shared component(s) of the neurons x styles matrix are taken out: they held "
+              f"{held:.0%} of the variance (a neuron that raises one style's tokens raises most of them)")
+    print()
     for g, name in enumerate(names):
         print(f"== {name} ==")
         for l, k, v in top_k(attr[g], top, min_layer):
@@ -227,11 +255,12 @@ def main():
     r_.add_argument("--scale", default="runs/identity/rabbit-screen.scale.npz")
     r_.add_argument("--min-layer", type=int, default=6)
     r_.add_argument("--top", type=int, default=8)
+    r_.add_argument("--drop", type=int, default=1, help="shared components to take out first (0: none)")
     a = ap.parse_args()
     if a.cmd == "attribute":
         attribute(a.out)
     else:
-        report(a.path, a.scale, a.min_layer, a.top)
+        report(a.path, a.scale, a.min_layer, a.top, a.drop)
 
 
 if __name__ == "__main__":
