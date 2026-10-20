@@ -53,18 +53,20 @@ def probe_accuracy(X: np.ndarray, y: np.ndarray, test: np.ndarray, k: int) -> fl
     return float(((Z[test] @ W + b).argmax(1) == y[test]).mean())
 
 
-def passage_folds(n_trials: int) -> list[np.ndarray]:
-    """One mask per passage: the trials that use it (trial i uses passage i % number of passages). Holding one out
-    asks whether a probe trained on the other passages still finds the injection in a passage it has not seen."""
-    p = np.arange(n_trials) % len(I.PASSAGES)
-    return [p == j for j in range(len(I.PASSAGES))]
+def passage_folds(n_trials: int, n_passages: int = len(I.PASSAGES), k: int = 5) -> list[np.ndarray]:
+    """One mask per fold of passages: the trials whose passage is in it (trial i uses passage i % n_passages, and
+    passage p is in fold p % min(k, n_passages)). With the three built-in passages, each is a fold. Holding a fold out
+    asks whether a probe trained on the other passages still finds the injection in passages it has not seen."""
+    f = (np.arange(n_trials) % n_passages) % min(k, n_passages)
+    return [f == j for j in range(min(k, n_passages))]
 
 
-def cell_accuracies(states: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def cell_accuracies(states: np.ndarray, rng, n_passages: int = len(I.PASSAGES)
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """states [k, n, L, d]: class 0 is none, the rest are the injected vectors, the same n trials in each class.
     Returns the probe accuracy per layer (trained and tested on every passage, held-out trials), the same with
-    shuffled training labels, and the accuracy on a held-out passage (the mean over the passages, each held out in
-    turn and the probe trained on the rest)."""
+    shuffled training labels, and the accuracy on held-out passages (the mean over the folds of passages, each held
+    out in turn and the probe trained on the rest)."""
     k, n, L, _ = states.shape
     y = np.repeat(np.arange(k), n)
     test = np.tile(split(n), k)
@@ -75,20 +77,23 @@ def cell_accuracies(states: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray, np
         shuffled = y.copy()
         shuffled[~test] = rng.permutation(y[~test])
         chance[l] = probe_accuracy(X, shuffled, test, k)
-        heldout[l] = np.mean([probe_accuracy(X, y, np.tile(f, k), k) for f in passage_folds(n)])
+        heldout[l] = np.mean([probe_accuracy(X, y, np.tile(f, k), k) for f in passage_folds(n, n_passages)])
     return real, chance, heldout
 
 
 def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: int, seed: int, variants: list[str],
-        out: str, arm: I.Arm = I.EMOTION_ARM) -> None:
+        out: str, arm: I.Arm = I.EMOTION_ARM, passages: list[str] | None = None) -> None:
     import mlx.core as mx
     from . import taps
     from .run import load
 
     d = geometry.Directions.load(vectors)
+    passages = passages or I.PASSAGES
+    if n < len(passages):
+        print(f"note: {n} trials per class use only the first {n} of {len(passages)} passages", flush=True)
     model, tok, tp = load(adapter)
-    trials = I.make_trials(n, seed, arm)
-    ps = I.prompts(tok, trials, arm)
+    trials = I.make_trials(n, seed, arm, len(passages))
+    ps = I.prompts(tok, trials, arm, passages)
     rng = np.random.default_rng(seed + 2)
     t0 = time.time()
 
@@ -114,7 +119,7 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     for variant in variants:
         for a in alphas:
             steered = [states(I.steer_vectors(d, e, a, layers), variant) for e in arm.names]
-            real, chance, held = cell_accuracies(np.stack([base] + steered), rng)
+            real, chance, held = cell_accuracies(np.stack([base] + steered), rng, min(n, len(passages)))
             for l in range(len(real)):
                 rows.append({"variant": variant, "alpha": a, "layer": l, "acc": float(real[l]),
                              "acc_shuffled": float(chance[l]), "acc_heldout": float(held[l])})
@@ -123,7 +128,8 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
                   f"(shuffled labels, mean {chance.mean():.2f})", flush=True)
             Path(out).parent.mkdir(parents=True, exist_ok=True)
             Path(out).write_text(json.dumps({"rows": rows, "alphas": alphas, "layers": layers, "n": n, "seed": seed,
-                                             "adapter": adapter, "arm": arm.name}, indent=0))
+                                             "adapter": adapter, "arm": arm.name,
+                                             "n_passages": min(n, len(passages))}, indent=0))
     print(f"wrote {out}")
 
 
@@ -160,8 +166,8 @@ def report(path: str, model: str | None = None) -> None:
         if model:
             print(f"{'model':>6s}" + "".join(
                 f"{(m if (m := model_accuracy(model, v, a)) is not None else float('nan')):9.2f}" for a in alphas))
-        print("(* = a steered layer; best = best layer; held = best layer when the probe is trained on two passages "
-              "and tested on the third, mean over the three; shuf = probe on shuffled labels, mean over layers"
+        print("(* = a steered layer; best = best layer; held = best layer when the probe is trained on some passages "
+              "and tested on others it has not seen, mean over the folds; shuf = probe on shuffled labels, mean over layers"
               + ("; model = the model's own answers" if model else "") + ")\n")
 
 
@@ -181,13 +187,18 @@ def main():
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--variants", default="all,prefix", help=f"comma-separated, from {', '.join(I.VARIANTS)}")
     r.add_argument("--out", default="runs/emotions/probe.json")
+    r.add_argument("--passages", default=None, help="a file from emotions.passages generate (default: the three built in)")
+    r.add_argument("--passage-split", default="train,val,test", help="which splits of --passages to use (the probe "
+                   "cross-validates by passage itself, so all of them by default)")
     p = sub.add_parser("report")
     p.add_argument("path")
     p.add_argument("--model", default=None, help="an introspect.json to put the model's own accuracy beside")
     a = ap.parse_args()
     if a.cmd == "run":
+        from .passages import load_passages
         run(a.vectors, a.adapter, [float(x) for x in a.alphas.split(",")], band(a.layers), a.trials, a.seed,
-            a.variants.split(","), a.out, I.ARMS[a.arm])
+            a.variants.split(","), a.out, I.ARMS[a.arm],
+            load_passages(a.passages, a.passage_split) if a.passages else None)
     else:
         report(a.path, a.model)
 

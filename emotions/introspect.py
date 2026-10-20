@@ -101,16 +101,17 @@ class Trial:
     passage: int            # index into PASSAGES
 
 
-def make_trials(n: int, seed: int = 0, arm: Arm = EMOTION_ARM) -> list[Trial]:
+def make_trials(n: int, seed: int = 0, arm: Arm = EMOTION_ARM, n_passages: int = len(PASSAGES)) -> list[Trial]:
+    """n trials; trial i reads passage i % n_passages, so with fewer trials than passages only the first n are used."""
     rng = np.random.default_rng(seed)
     opts = arm.options
-    return [Trial([opts[i] for i in rng.permutation(len(opts))], i % len(PASSAGES)) for i in range(n)]
+    return [Trial([opts[i] for i in rng.permutation(len(opts))], i % n_passages) for i in range(n)]
 
 
-def user_message(t: Trial, arm: Arm = EMOTION_ARM) -> tuple[str, str]:
+def user_message(t: Trial, arm: Arm = EMOTION_ARM, passages: list[str] = PASSAGES) -> tuple[str, str]:
     """(the whole user message, the passage inside it)."""
     options = "\n".join(f"{LETTERS[i]}. {SHOWN.get(o, o)}" for i, o in enumerate(t.order))
-    passage = PASSAGES[t.passage]
+    passage = passages[t.passage]
     return f"{arm.frame}\n\n{passage}\n\n{QUESTION.format(indef=arm.indef, options=options)}", passage
 
 
@@ -206,13 +207,13 @@ def confusion(rs: list[dict], options: list[str] = OPTIONS) -> dict[str, dict[st
 
 # ---- running ----
 
-def prompts(tok, trials: list[Trial], arm: Arm = EMOTION_ARM):
+def prompts(tok, trials: list[Trial], arm: Arm = EMOTION_ARM, passages: list[str] = PASSAGES):
     """For each trial: the token ids, and the spans of its pieces (see trial_spans)."""
     from . import taps
     out = []
     enc = lambda s: tok.encode(s, add_special_tokens=False)
     for t in trials:
-        msg, passage = user_message(t, arm)
+        msg, passage = user_message(t, arm, passages)
         text = tok.apply_chat_template([{"role": "user", "content": msg}], add_generation_prompt=True,
                                        enable_thinking=False, tokenize=False)
         ids = taps.chat_ids(tok, [{"role": "user", "content": msg}])
@@ -221,7 +222,7 @@ def prompts(tok, trials: list[Trial], arm: Arm = EMOTION_ARM):
 
 
 def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: int, seed: int, variants: list[str],
-        out: str, arm: Arm = EMOTION_ARM) -> None:
+        out: str, arm: Arm = EMOTION_ARM, passages: list[str] | None = None) -> None:
     import mlx.core as mx
     from . import taps
     from .run import load
@@ -231,13 +232,15 @@ def run(vectors: str, adapter: str, alphas: list[float], layers: list[int], n: i
     d = geometry.Directions.load(vectors)
     missing = [x for x in arm.names if x not in d.emotions]
     assert not missing, f"{vectors} has no vectors for {missing}"
-    meta = {"alphas": alphas, "layers": layers, "n": n, "seed": seed, "adapter": adapter, "arm": arm.name}
+    passages = passages or PASSAGES
+    meta = {"alphas": alphas, "layers": layers, "n": n, "seed": seed, "adapter": adapter, "arm": arm.name,
+            "n_passages": len(passages)}
     model, tok, tp = load(adapter)
     letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
     assert all(len(i) == 1 for i in letter_ids), "each option letter must be one token"
     letter_ids = mx.array([i[0] for i in letter_ids])
-    trials = make_trials(n, seed, arm)
-    ps = prompts(tok, trials, arm)
+    trials = make_trials(n, seed, arm, len(passages))
+    ps = prompts(tok, trials, arm, passages)
     rng = np.random.default_rng(seed + 1)
     rows: list[dict] = []
     t0 = time.time()
@@ -289,9 +292,10 @@ def load_results(paths: list[str]) -> dict:
     parts = [json.loads(Path(p).read_text()) for p in paths]
     for p in parts:
         p.setdefault("arm", "emotions")                          # (the first runs did not record the arm)
+        p.setdefault("n_passages", len(PASSAGES))                # (nor the number of passages: it was always the three)
     first = parts[0]
     for p in parts[1:]:
-        for k in ("arm", "n", "seed", "layers"):
+        for k in ("arm", "n", "seed", "layers", "n_passages"):
             assert p[k] == first[k], f"{k} differs between the result files"
     kl_all: dict[str, dict[str, float]] = {}
     for p in parts:
@@ -306,7 +310,7 @@ def report(paths: list[str]) -> None:
     rows, alphas = data["rows"], data["alphas"]
     arm = ARMS[data.get("arm", "emotions")]                      # (the first runs did not record the arm)
     options = arm.options
-    trials = make_trials(data["n"], data["seed"], arm)
+    trials = make_trials(data["n"], data["seed"], arm, data["n_passages"])
     rng = np.random.default_rng(0)
     variants = [v for v in VARIANTS if any(r["variant"] == v for r in rows)]
     print(f"{arm.name}: {data['n']} trials per cell, layers {data['layers'][0]}-{data['layers'][-1]}, "
@@ -370,12 +374,16 @@ def main():
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--variants", default="all,prefix", help=f"comma-separated, from {', '.join(VARIANTS)}")
     r.add_argument("--out", default="runs/emotions/introspect.json")
+    r.add_argument("--passages", default=None, help="a file from emotions.passages generate (default: the three built in)")
+    r.add_argument("--passage-split", default="test", help="which splits of --passages to use, comma-separated")
     p = sub.add_parser("report")
     p.add_argument("paths", nargs="+", help="result files of the same test, merged (e.g. one per set of variants)")
     a = ap.parse_args()
     if a.cmd == "run":
+        from .passages import load_passages
         run(a.vectors, a.adapter, [float(x) for x in a.alphas.split(",")], band(a.layers), a.trials, a.seed,
-            a.variants.split(","), a.out, ARMS[a.arm])
+            a.variants.split(","), a.out, ARMS[a.arm],
+            load_passages(a.passages, a.passage_split) if a.passages else None)
     else:
         report(a.paths)
 

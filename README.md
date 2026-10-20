@@ -180,7 +180,8 @@ model process at a time: a second 8B model next to `mlx_lm.chat` pushes a 16 GB 
 ## Layout
 
 - `emotions/`: emotion vectors (`geometry.py`, `run.py`), the residual-stream taps (`taps.py`), the chat server
-  (`serve.py`), and the experiments built on them (`introspect.py`, `genre.py`, `advice.py`, `sae.py`).
+  (`serve.py`), and the experiments built on them (`introspect.py`, `probe.py`, `passages.py`, `genre.py`,
+  `advice.py`, `sae.py`).
 - `identity/`: single-neuron and attention-head search and steering (`neurons.py`, `heads.py`, `concept.py`,
   `screen.py`, `search.py`, `suggest.py`, `robust.py`, `card.py`).
 - `web/`: the chat page.
