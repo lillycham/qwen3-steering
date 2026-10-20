@@ -22,6 +22,7 @@ the model's answer against its own live label, next to
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections import Counter, defaultdict
@@ -127,16 +128,18 @@ class LookupBaseline:
 
 @torch.no_grad()
 def labels_and_answers(model, exs: list[Example], digits, pad_id, device, batch_size: int = 16,
-                       with_answers: bool = True) -> tuple[list[int], list[int | None]]:
+                       with_answers: bool = True, around=None) -> tuple[list[int], list[int | None]]:
     """For each example: the live label and the model's answer (a token id for token tasks, a bucket for bucket tasks,
-    read from the digits only; None if with_answers is off)."""
+    read from the digits only; None if with_answers is off). around(batch, chunk), if given, returns a context manager
+    that is active during the forward pass of each batch (proprio.steer uses it to steer the residual stream)."""
     labels: list[int] = []
     answers: list[int | None] = []
     digit_t = torch.tensor(digits, device=device)
     for i in range(0, len(exs), batch_size):
         chunk = exs[i:i + batch_size]
         batch = collate(chunk, pad_id)
-        out = forward(model, batch, device)
+        with around(batch, chunk) if around else contextlib.nullcontext():
+            out = forward(model, batch, device)
         labels += read_labels(model, out, batch["specs"])
         if not with_answers:
             answers += [None] * len(chunk)
