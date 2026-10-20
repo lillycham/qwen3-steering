@@ -27,10 +27,29 @@ I use an MLX harness with hooks to enable this.
   4-bit model, so run one model process at a time.
 - **The persona training (`owl/`) is plain PyTorch** and runs on CUDA, MPS or CPU. The 8B arms were trained on a
   rented GPU (see below).
-- Everything is set up with [Nix](https://nixos.org/): `nix develop` gives the PyTorch shell and
-  `nix develop .#mlx` gives the MLX shell. There is no `pip` install path yet.
-- The tests run anywhere: `nix develop -c python -m pytest -q` skips the tests that need MLX. On a Mac, run them
-  with `nix develop .#mlx -c python -m pytest -q emotions identity`.
+- The project is set up with [Nix](https://nixos.org/) (`nix develop` is the PyTorch shell, `nix develop .#mlx` the MLX
+  shell), and also works with plain `pip`: see "Setup without Nix".
+- The tests run anywhere. Without MLX, `python -m pytest -q` skips the tests that need it.
+
+### Setup without Nix
+
+Use Python 3.12 or newer. Run every command in this README from the repo root, in the virtual environment:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt          # PyTorch side: owl/, tests/
+pip install -r requirements-mlx.txt      # MLX side: emotions/, identity/, the chat page (Apple silicon only)
+python -m pytest -q
+```
+
+On Linux or Windows, install only `requirements.txt`. On a Mac, install both into the one environment. Where the
+commands below say `nix develop` or `nix develop .#mlx`, activate the virtual environment instead. `scripts/chat.sh`
+uses the `python` on your `PATH` when Nix is not installed.
+
+I tested this on Python 3.12 with the newest packages from PyPI: all tests pass on a Mac with both files installed,
+and with only `requirements.txt` the MLX tests are skipped. The Nix shells pin their versions, and the pip files do
+not.
 
 ## Quick start
 
