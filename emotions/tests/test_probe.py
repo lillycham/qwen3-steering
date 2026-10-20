@@ -78,6 +78,31 @@ def test_many_passages_fall_into_five_balanced_folds_with_no_trial_in_two():
     assert [f.tolist() for f in probe.passage_folds(32)] == [f.tolist() for f in probe.passage_folds(32, 3)]
 
 
+def test_topic_ids_are_shared_by_passages_of_a_topic_and_follow_sorted_topic_order():
+    assert probe.topic_ids(["tea", "rail", "tea", "bike", "rail"]) == [2, 1, 2, 0, 1]
+
+
+def test_folds_by_topic_keep_every_topic_in_one_fold():
+    topics = [f"topic {t}" for t in range(8) for _ in range(5)]                 # 8 topics, 5 passages each
+    groups = probe.topic_ids(topics)
+    folds = probe.passage_folds(120, n_passages=40, groups=groups)               # (3 trials per passage: it wraps)
+    assert len(folds) == 5 and (sum(f.astype(int) for f in folds) == 1).all()
+    fold_of_topic = {}
+    for j, f in enumerate(folds):
+        for i in np.flatnonzero(f):
+            assert fold_of_topic.setdefault(topics[i % 40], j) == j               # (a topic never lands in two folds)
+    assert len(fold_of_topic) == 8
+    few = probe.passage_folds(40, n_passages=40, groups=[0, 1] * 20)               # (two groups: only two folds)
+    assert len(few) == 2 and all(f.sum() == 20 for f in few)
+
+
+def test_cell_accuracies_take_topic_groups():
+    rng = np.random.default_rng(1)
+    groups = [i // 5 for i in range(40)]                                          # 8 topics of 5 passages
+    real, chance, held = probe.cell_accuracies(planted(shift=6.0, n=40), rng, n_passages=40, groups=groups)
+    assert real.min() > 0.9 and held.min() > 0.8
+
+
 def test_cell_accuracies_take_the_number_of_passages():
     rng = np.random.default_rng(1)
     real, chance, held = probe.cell_accuracies(planted(shift=6.0, n=40), rng, n_passages=40)

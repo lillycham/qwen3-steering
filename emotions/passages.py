@@ -13,8 +13,12 @@ from a grid of topics and forms, and keeps only the ones that are
     negative side of every emotion (the hand-written passages read about -2 for sadness), and that is neutral; what
     counts is a positive reading. The default 0.75 keeps all 36 neutral stimuli and the three hand-written passages and
     only 6% of the emotional stimuli (measured on the vectors in runs/emotions/qwen3-8b.npz, in sample).
-Each passage is assigned to train, val or test by a hash of its text, so the split is by passage, stays the same when
-the set is regenerated or grows, and no passage is ever in two splits.
+Each passage is assigned to train, val or test by a hash of its topic, so a topic is never in two splits and the split
+stays the same when the set is regenerated or grows. (Splitting by passage text was tried first: 52 of the 60 topics
+then had passages in more than one split, and a probe that has seen a topic's other passages has an easy time with a new
+one. "Held-out" has to mean a topic the reader has not seen.)
+
+    python -m emotions.passages resplit runs/emotions/passages.json     # redo the splits of an older file, by topic
 """
 from __future__ import annotations
 
@@ -98,9 +102,9 @@ def is_new(text: str, kept: list[str], limit: float = 0.6) -> bool:
     return not any(near_duplicate(text, k, limit) for k in kept)
 
 
-def split_of(text: str) -> str:
-    """train, val or test (70/10/20), from a hash of the text alone."""
-    bucket = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16) % 100
+def split_of(key: str) -> str:
+    """train, val or test (70/10/20), from a hash of the key alone (the topic of a passage)."""
+    bucket = int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) % 100
     return next(name for name, upto in SPLITS if bucket < upto)
 
 
@@ -112,16 +116,37 @@ def prompt_for(i: int) -> tuple[str, str, str]:
     return topic, form, PROMPT.format(topic=topic, form=FORMS[form])
 
 
-def load_passages(path: str, splits: str | None = None) -> list[str]:
-    """The passage texts of a file made by `generate`, in file order, optionally only those in the given splits
-    (comma-separated, from train, val, test)."""
+def load_records(path: str, splits: str | None = None) -> list[dict]:
+    """The passages of a file made by `generate` (text, topic, form, split, z), in file order, optionally only those
+    in the given splits (comma-separated, from train, val, test)."""
     data = json.loads(Path(path).read_text())["passages"]
     if splits:
         want = set(splits.split(","))
         unknown = want - {n for n, _ in SPLITS}
         assert not unknown, f"unknown split {sorted(unknown)}; choose from train, val, test"
         data = [p for p in data if p["split"] in want]
-    return [p["text"] for p in data]
+    return data
+
+
+def load_passages(path: str, splits: str | None = None) -> list[str]:
+    """The passage texts, in file order (see load_records)."""
+    return [p["text"] for p in load_records(path, splits)]
+
+
+def load_topics(path: str, splits: str | None = None) -> list[str]:
+    """The topic of each passage, in the same order as load_passages."""
+    return [p["topic"] for p in load_records(path, splits)]
+
+
+def resplit(path: str) -> None:
+    """Redo the split of every passage in a file by its topic, in place. The passages are not touched."""
+    data = json.loads(Path(path).read_text())
+    for p in data["passages"]:
+        p["split"] = split_of(p["topic"])
+    Path(path).write_text(json.dumps(data, indent=1))
+    ps = data["passages"]
+    print(f"{path}: " + ", ".join(f"{s} {sum(p['split'] == s for p in ps)} passages / "
+                                 f"{len({p['topic'] for p in ps if p['split'] == s})} topics" for s, _ in SPLITS))
 
 
 def generate(vectors: str, out: str, n: int, seed: int, band: list[int], z_limit: float, max_tokens: int) -> None:
@@ -159,7 +184,7 @@ def generate(vectors: str, out: str, n: int, seed: int, band: list[int], z_limit
             why[reason] = why.get(reason, 0) + 1
             continue
         assert z is not None
-        kept.append({"text": passage, "topic": topic, "form": form, "split": split_of(passage),
+        kept.append({"text": passage, "topic": topic, "form": form, "split": split_of(topic),
                      "z": {e: round(float(v), 3) for e, v in zip(d.emotions, z)}})
         if len(kept) % 25 == 0 or len(kept) == n:
             Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -203,9 +228,13 @@ def main():
     g.add_argument("--max-tokens", type=int, default=120)
     s = sub.add_parser("show")
     s.add_argument("path")
+    r = sub.add_parser("resplit")
+    r.add_argument("path")
     a = ap.parse_args()
     if a.cmd == "generate":
         generate(a.vectors, a.out, a.n, a.seed, band(a.band), a.z_limit, a.max_tokens)
+    elif a.cmd == "resplit":
+        resplit(a.path)
     else:
         show(a.path)
 

@@ -77,6 +77,29 @@ def test_load_passages_keeps_file_order_and_filters_by_split(tmp_path):
         P.load_passages(path, "dev")
 
 
+def test_load_topics_follows_the_order_of_the_passages(tmp_path):
+    items = [{**it, "topic": f"topic {i % 2}"} for i, it in enumerate(ITEMS)]
+    path = write(tmp_path, items)
+    assert P.load_topics(path) == ["topic 0", "topic 1", "topic 0", "topic 1", "topic 0"]
+    assert P.load_topics(path, "test") == ["topic 0", "topic 0"]
+    assert [r["text"] for r in P.load_records(path, "val")] == ["text 1"]
+
+
+def test_resplit_gives_every_topic_one_split_and_leaves_the_passages_alone(tmp_path, capsys):
+    items = [{"text": f"text {i}", "topic": f"topic {i % 12}", "form": "how-to", "split": ["train", "val", "test"][i % 3],
+              "z": {"fear": 0.0}} for i in range(120)]                          # (splits scrambled across topics)
+    path = write(tmp_path, items)
+    P.resplit(path)
+    after = json.loads((tmp_path / "passages.json").read_text())["passages"]
+    assert [p["text"] for p in after] == [it["text"] for it in items]
+    by_topic = {}
+    for p in after:
+        by_topic.setdefault(p["topic"], set()).add(p["split"])
+    assert all(len(s) == 1 for s in by_topic.values()) and len(by_topic) == 12
+    assert all(p["split"] == P.split_of(p["topic"]) for p in after)
+    assert "train" in capsys.readouterr().out and P.load_passages(path, "train")
+
+
 def test_show_summarises_the_file(tmp_path, capsys):
     P.show(write(tmp_path, ITEMS))
     out = capsys.readouterr().out
