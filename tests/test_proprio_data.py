@@ -7,30 +7,7 @@ import torch
 
 from proprio import data as D
 from proprio.labels import TASKS
-
-
-class FakeTok:
-    """Words and punctuation, each with its leading whitespace, and real character offsets, like a BPE tokenizer."""
-
-    def __init__(self):
-        self.vocab: dict[str, int] = {}
-        self.words: list[str] = []
-
-    def _id(self, w: str) -> int:
-        if w not in self.vocab:
-            self.vocab[w] = len(self.words)
-            self.words.append(w)
-        return self.vocab[w]
-
-    def apply_chat_template(self, messages, add_generation_prompt, enable_thinking, tokenize):
-        return f"<|im_start|>user\n{messages[0]['content']}<|im_end|>\n<|im_start|>assistant\n"
-
-    def __call__(self, text, return_offsets_mapping=False, add_special_tokens=False):
-        spans = [m.span() for m in re.finditer(r"\s*\w+|\s*[^\w\s]", text)]
-        return {"input_ids": [self._id(text[a:b]) for a, b in spans], "offset_mapping": spans}
-
-    def encode(self, s, add_special_tokens=False):
-        return self(s)["input_ids"]
+from proprio_fakes import FakeTok
 
 
 PASSAGE = "To make a pot of tea, boil fresh water and warm the pot first. Use one spoon of leaves for each cup."

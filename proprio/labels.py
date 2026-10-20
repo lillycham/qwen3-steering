@@ -87,15 +87,16 @@ def label_of(task: Task, logits: torch.Tensor) -> int:
 
 @torch.no_grad()
 def read_labels(model, out, specs: list[Spec]) -> list[int]:
-    """The labels that the forward pass `out` (from model(..., output_hidden_states=True)) gives for each spec."""
+    """The labels that the forward pass `out` gives for each spec. `out` needs hidden_states: model(...,
+    output_hidden_states=True), or model.model(...) which skips the output head (the full-vocabulary logits of every
+    position would cost gigabytes; only the quoted positions are read here). The "logits" source is the lens after the
+    last layer, which is the output."""
+    n_layers = len(out.hidden_states) - 1
     labels = []
     for s in specs:
         task = TASKS[s.task]
-        if task.source == "lens":
-            logits = lens_row(model, out.hidden_states, s.layer, s.row, s.pos)
-        else:
-            logits = out.logits[s.row, s.pos]
-        labels.append(label_of(task, logits))
+        layer = s.layer if task.source == "lens" else n_layers
+        labels.append(label_of(task, lens_row(model, out.hidden_states, layer, s.row, s.pos)))
     return labels
 
 
