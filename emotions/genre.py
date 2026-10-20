@@ -1,6 +1,6 @@
 """Which reply genre does an emotion push start? One forward pass per (prompt, push); no generation.
 
-    python -m emotions.genre /Users/lcham/devel/owl-neurons/runs/emotions/qwen3-8b.npz --out runs/emotions/genre.json
+    python -m emotions.genre runs/emotions/qwen3-8b.npz --out runs/emotions/genre.json
 
 Exported chats showed that a bare "hi" under an emotion push gets answered in a genre: a hotline script (sadness),
 HR or legal advice ("If you're dealing with...", anger, low calm and joy), all-caps warnings (fear), lyrical text

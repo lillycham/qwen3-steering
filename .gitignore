@@ -7,3 +7,6 @@ upstream
 data
 .direnv/
 units/
+.DS_Store
+.vscode/
+.claude/
