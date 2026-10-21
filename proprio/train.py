@@ -27,13 +27,19 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import numpy as np
-import torch
-import torch.nn.functional as F
+# Every batch has its own sequence length, so the GPU allocators keep many odd-sized buffers that are never reused: a
+# 0.6B training run reached an 11 GB footprint (9.9 GB of it GPU buffers) on a 16 GB Mac. This caps the MPS allocator
+# (it is read when MPS first allocates, so it is set before torch is imported) and free_cache() empties the caches.
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.6")
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 
 from . import lora
 from .data import Example, LookupWeights, collate, digit_ids, encode_example
