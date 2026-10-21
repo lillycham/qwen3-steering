@@ -171,7 +171,7 @@ def main():
     ap.add_argument("out", help="a run folder of proprio.train, with adapters.pt")
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--passages", default="runs/emotions/passages.json")
-    ap.add_argument("--tasks", default="top1,top3,entropy,lens_top1,lens_entropy")
+    ap.add_argument("--tasks", default="alt,top3,entropy,lens_top1,lens_alt,lens_entropy")
     ap.add_argument("--layer", type=int, default=None, help="steer after this decoder layer (default: a quarter of the depth)")
     ap.add_argument("--alphas", default="0.5,1,2")
     ap.add_argument("--where", default="prefix", choices=["prefix", "all"])

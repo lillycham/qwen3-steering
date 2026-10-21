@@ -14,7 +14,7 @@ PASSAGES = [
     "A standard filing cabinet has four drawers, each about sixty centimetres deep, with folders hung from rails along the sides.",
     "The morning train to the coast leaves at seven and stops at four stations before the last one on the line this year.",
 ]
-TASK_NAMES = ["top1", "top3", "entropy", "lens_top1", "lens_entropy"]
+TASK_NAMES = ["top1", "top3", "alt", "entropy", "lens_top1", "lens_alt", "lens_entropy"]
 
 
 def setup(tiny, n=8, seed=0):
@@ -103,8 +103,9 @@ def test_evaluate_reports_every_control_and_the_stale_comparison(tiny):
         lookup.fit(e.key, lab)
     rows = T.evaluate(tiny, tok, exs, digits, 0, "cpu", lookup)
     assert set(rows) == set(TASK_NAMES)
-    for r in rows.values():
+    for task, r in rows.items():
         assert 0 <= r["accuracy"] <= 1 and 0 <= r["lookup"] <= 1 and r["label_changed"] == 0.0 and "external" not in r
+        assert ("copy_next" in r) == (TASKS[task].kind == "token") and 0 <= r.get("copy_next", 0) <= 1
     for m in made.values():                                                        # (a trained adapter moves some labels)
         torch.nn.init.normal_(m.B, std=0.5)
     rows = T.evaluate(tiny, tok, exs, digits, 0, "cpu", lookup)

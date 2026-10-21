@@ -46,6 +46,24 @@ def test_label_of_gives_the_kth_token_and_the_entropy_bucket():
     assert P.label_of(P.TASKS["entropy"], sharp) == 0 and P.label_of(P.TASKS["entropy"], flat) == 7
 
 
+def test_the_alternative_label_is_the_strongest_prediction_that_is_not_the_token_that_followed():
+    logits = torch.tensor([1.0, 5.0, 3.0, 4.0, 2.0])              # ranking: token 1, then 3, then 2
+    alt = P.TASKS["alt"]
+    assert P.label_of(alt, logits, nxt=7) == 1                      # (the real next token is elsewhere: the top one)
+    assert P.label_of(alt, logits, nxt=1) == 3                      # (the top one is the real next token: the second)
+    assert P.label_of(alt, logits, nxt=3) == 1
+    assert P.TASKS["alt"].kind == "token" and P.TASKS["lens_alt"].source == "lens"
+    assert P.TASKS["top1"].leaky and not P.TASKS["top3"].leaky and not alt.leaky and not P.TASKS["entropy"].leaky
+
+
+def test_read_labels_passes_the_real_next_token_to_the_alternative_tasks(tiny, ids):
+    out = run(tiny, ids)
+    top = int(out.logits[0, 3].argmax())
+    same = P.read_labels(tiny, out, [P.Spec("alt", 0, 3, 0, nxt=top)])[0]
+    other = P.read_labels(tiny, out, [P.Spec("alt", 0, 3, 0, nxt=(top + 1) % 97)])[0]
+    assert same == int(out.logits[0, 3].topk(2).indices[1]) and other == top
+
+
 def test_task_kinds_and_targets():
     assert P.TASKS["top3"].kind == "token" and P.TASKS["lens_entropy"].kind == "bucket"
     digits = tuple(range(100, 108))

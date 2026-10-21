@@ -56,6 +56,17 @@ def test_a_repeated_token_is_named_with_its_number_and_the_number_picks_the_righ
     assert seen == {2, 3, 4}          # (the 1st "the" carries the newline before it, so it is counted but never chosen)
 
 
+def test_the_example_knows_the_token_that_really_follows_and_collate_passes_it_on():
+    tok = FakeTok()
+    rng = np.random.default_rng(5)
+    exs = [D.encode_example(tok, PASSAGE, "alt", 0, rng) for _ in range(5)]
+    for e in exs:
+        assert e.nxt == e.ids[e.pos + 1]
+        assert tok.words[e.nxt].strip() != ""
+    b = D.collate(exs, pad_id=0)
+    assert [s.nxt for s in b["specs"]] == [e.nxt for e in exs]
+
+
 def test_held_out_and_training_phrasings_are_apart():
     tok = FakeTok()
     rng = np.random.default_rng(2)

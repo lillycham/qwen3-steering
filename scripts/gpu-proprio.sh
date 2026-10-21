@@ -21,6 +21,7 @@ PASSAGES=${PASSAGES:-runs/proprio/wiki.json}
 MODEL=${MODEL:-Qwen/Qwen3-8B}
 EXTERNAL=${EXTERNAL:-Qwen/Qwen3-1.7B}          # another model of the family: the external-observer baseline
 OUT=runs/proprio/run-8b
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True       # (batches of every length: less fragmentation)
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 [ -f "$PASSAGES" ] || { echo "missing $PASSAGES: copy it to the box first" >&2; exit 1; }

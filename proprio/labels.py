@@ -30,30 +30,40 @@ N_BUCKETS = len(ENTROPY_EDGES) + 1
 class Task:
     name: str
     source: str            # "logits": the model's output. "lens": the residual stream after a layer, through the head
-    what: str              # "topk" or "entropy"
+    what: str              # "topk", "alt" or "entropy"
     k: int = 1
 
     @property
     def kind(self) -> str:
-        return "token" if self.what == "topk" else "bucket"
+        return "bucket" if self.what == "entropy" else "token"
+
+    @property
+    def leaky(self) -> bool:
+        """The answer can be copied from the text: the model's top prediction is often the token that really follows,
+        and that token is on the page. The alternative tasks ask for the strongest prediction that is NOT that token."""
+        return self.what == "topk" and self.k == 1
 
 
 TASKS = {t.name: t for t in (
     Task("top1", "logits", "topk", 1),
     Task("top3", "logits", "topk", 3),
+    Task("alt", "logits", "alt"),
     Task("entropy", "logits", "entropy"),
     Task("lens_top1", "lens", "topk", 1),
+    Task("lens_alt", "lens", "alt"),
     Task("lens_entropy", "lens", "entropy"),
 )}
 
 
 @dataclass(frozen=True)
 class Spec:
-    """One question: the task, the batch row and position of the quoted token, and the layer for a lens task."""
+    """One question: the task, the batch row and position of the quoted token, the layer for a lens task, and the token
+    that actually follows the quoted one in the text (nxt, -1 if unknown), which the "alt" tasks need."""
     task: str
     row: int
     pos: int
     layer: int = 0
+    nxt: int = -1
 
 
 def entropy_bits(logp: torch.Tensor) -> torch.Tensor:
@@ -77,11 +87,15 @@ def lens_row(model, hidden_states: tuple, layer: int, row: int, pos: int) -> tor
 
 
 @torch.no_grad()
-def label_of(task: Task, logits: torch.Tensor) -> int:
-    """The label for one position's logits [vocab]: a token id (top-k) or an entropy bucket (0..7)."""
+def label_of(task: Task, logits: torch.Tensor, nxt: int = -1) -> int:
+    """The label for one position's logits [vocab]: a token id (top-k, or the strongest prediction other than the
+    token `nxt` that really followed) or an entropy bucket (0..7)."""
     lg = logits.float()
     if task.what == "topk":
         return int(lg.topk(task.k).indices[task.k - 1])
+    if task.what == "alt":
+        top2 = lg.topk(2).indices
+        return int(top2[1] if int(top2[0]) == nxt else top2[0])
     return int(bucket(entropy_bits(torch.log_softmax(lg, -1))))
 
 
@@ -96,7 +110,7 @@ def read_labels(model, out, specs: list[Spec]) -> list[int]:
     for s in specs:
         task = TASKS[s.task]
         layer = s.layer if task.source == "lens" else n_layers
-        labels.append(label_of(task, lens_row(model, out.hidden_states, layer, s.row, s.pos)))
+        labels.append(label_of(task, lens_row(model, out.hidden_states, layer, s.row, s.pos), s.nxt))
     return labels
 
 

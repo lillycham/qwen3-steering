@@ -14,6 +14,9 @@ topics it was not trained on, with a question phrasing it was not trained on, it
 the model's answer against its own live label, next to
   chance        the best constant answer;
   lookup        the usual answer for that (task, layer, token), from the training labels: what text alone buys;
+  copy_next     for the token tasks: the token that really follows the quoted one, read off the page. A model's top
+                prediction is often that token, so "top1" can be answered by copying (the paper asks for the strongest
+                prediction other than the actual next token for this reason: the "alt" tasks);
   external      the label of another model of the family on the same text, as the prediction: what an observer that is
                 good at language but is not this model would answer (--external);
   stale         the accuracy against the label of the base model (adapters off) on the same text. Where the adapters
@@ -37,6 +40,14 @@ from .data import Example, LookupWeights, collate, digit_ids, encode_example
 from .labels import TASKS, read_labels, target_id
 
 LENS_LAYER_FRACTIONS = (0.33, 0.5, 0.67)
+
+
+def free_cache(device) -> None:
+    """Give the GPU allocator's cached buffers back (see the note at the top of the file)."""
+    if str(device).startswith("mps"):
+        torch.mps.empty_cache()
+    elif str(device).startswith("cuda"):
+        torch.cuda.empty_cache()
 
 
 def lens_layers(n_layers: int) -> list[int]:
@@ -177,6 +188,8 @@ def evaluate(model, tok, exs: list[Example], digits, pad_id, device, lookup: Loo
                "chance": accuracy([lookup.constant(task)] * len(idx), truth),
                "lookup": accuracy(look, truth),
                "label_changed": len(changed) / len(idx)}
+        if TASKS[task].kind == "token":
+            row["copy_next"] = accuracy([exs[i].nxt for i in idx], truth)      # (the token that really follows, off the page)
         if changed:
             row["on_changed_live"] = accuracy([answers[i] for i in changed], [labels[i] for i in changed])
             row["on_changed_stale"] = accuracy([answers[i] for i in changed], [stale[i] for i in changed])
@@ -188,7 +201,7 @@ def evaluate(model, tok, exs: list[Example], digits, pad_id, device, lookup: Loo
 
 
 def format_eval(rows: dict) -> str:
-    cols = ["n", "accuracy", "chance", "lookup", "external", "label_changed", "on_changed_live", "on_changed_stale"]
+    cols = ["n", "accuracy", "chance", "lookup", "copy_next", "external", "label_changed", "on_changed_live", "on_changed_stale"]
     lines = [f"{'task':14s}" + "".join(f"{c:>17s}" for c in cols)]
     for task, r in rows.items():
         lines.append(f"{task:14s}" + "".join(f"{r[c]:17.3f}" if isinstance(r.get(c), float) else f"{str(r.get(c, '-')):>17s}"
@@ -257,6 +270,8 @@ def run(out_dir: str, model_name: str, passages: str, tasks: list[str], steps: i
         for e, lab, hit in zip(exs, info["labels"], info["hit"].tolist()):
             lookup.fit(e.key, lab)
             run_hit[e.task].append(hit)
+        if step % 10 == 0:
+            free_cache(device)
         if step % 10 == 0 or step == steps:
             rec = {"step": step, "loss": float(loss.detach()), "s": round(time.time() - t0, 1),
                    "hit": {k: round(float(np.mean(v[-100:])), 3) for k, v in run_hit.items()}}
@@ -269,6 +284,7 @@ def run(out_dir: str, model_name: str, passages: str, tasks: list[str], steps: i
             (out / f"eval-{step}.json").write_text(json.dumps(rows, indent=1))
             torch.save(lora.state_dict_of(model), out / "adapters.pt")
             print(format_eval(rows), flush=True)
+            free_cache(device)
             model.train()
     print(f"wrote {out}")
 
@@ -282,7 +298,8 @@ def main():
     r.add_argument("out")
     r.add_argument("--model", default="Qwen/Qwen3-0.6B")
     r.add_argument("--passages", default="runs/emotions/passages.json")
-    r.add_argument("--tasks", default="top1,top3,entropy,lens_top1,lens_entropy")
+    r.add_argument("--tasks", default="alt,top3,entropy,lens_top1,lens_alt,lens_entropy",
+                   help="top1 is left out by default: it can be answered by copying the next token off the page")
     r.add_argument("--steps", type=int, default=600)
     r.add_argument("--batch", type=int, default=16)
     r.add_argument("--lr", type=float, default=1e-4)

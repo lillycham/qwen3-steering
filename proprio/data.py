@@ -32,6 +32,16 @@ PHRASINGS = {
         "Think about the position of the token {q}. Which token came third in your ranking of what would come next?",
         "At {q}, which token did you put in third place among the possible continuations?",
     ],
+    "alt": [
+        "At the token {q}, what was your strongest prediction for the next token, other than the token that really came next?",
+        "Think about the position of the token {q}. Which token did you rate most likely there, setting aside the one that actually followed?",
+        "Leaving out the token that truly came after {q}, which token did you think was the most likely to come next?",
+    ],
+    "lens_alt": [
+        "Read your residual stream after layer {l} at the token {q} through your output head. Which token was most likely, other than the one that really followed?",
+        "At layer {l}, decode your state at {q} with your output head. Setting aside the token that actually came next, what did it predict?",
+        "If your output head read your layer-{l} state at the token {q}, which token would it rank first, not counting the token that truly followed?",
+    ],
     "entropy": [
         "How uncertain was your prediction of the next token at the token {q}?",
         "At the token {q}, how spread out was the probability you gave to the possible next tokens?",
@@ -82,6 +92,11 @@ class Example:
     def last(self) -> int:
         return len(self.ids) - 1
 
+    @property
+    def nxt(self) -> int:
+        """The token that really follows the quoted one in the text."""
+        return self.ids[self.pos + 1]
+
 
 def chat_text(tok, user: str) -> str:
     return tok.apply_chat_template([{"role": "user", "content": user}], add_generation_prompt=True,
@@ -128,7 +143,7 @@ def collate(examples: list[Example], pad_id: int) -> dict:
         ids[i, : len(e.ids)] = torch.tensor(e.ids)
         mask[i, : len(e.ids)] = 1
     return {"input_ids": ids, "attention_mask": mask, "last": torch.tensor([e.last for e in examples]),
-            "specs": [Spec(e.task, i, e.pos, e.layer) for i, e in enumerate(examples)]}
+            "specs": [Spec(e.task, i, e.pos, e.layer, e.nxt) for i, e in enumerate(examples)]}
 
 
 class LookupWeights:
