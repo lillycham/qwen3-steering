@@ -19,6 +19,8 @@ class MLPTap(nn.Module):
         self.mlp = mlp
         self.record_last = False
         self.record_peak = False                  # keep each neuron's largest |activation| over positions 1.. (see peak_activations)
+        self.record_mean = False                  # keep each neuron's signed mean activation over positions 1.. (see mean_activations)
+        self.mean: mx.array | None = None
         self.watch: list[int] | None = None       # neurons whose activation to keep at every position (before any push)
         self.cols: mx.array | None = None         # [positions, len(watch)], set while watch is
         self.out: mx.array | None = None
@@ -30,6 +32,8 @@ class MLPTap(nn.Module):
         h = nn.silu(m.gate_proj(x)) * m.up_proj(x)
         if self.record_last:
             self.out = h[:, -1, :]                  # (before the push: after it, a big push leaves the value too coarse in bf16)
+        if self.record_mean and h.shape[1] > 1:
+            self.mean = h[0, 1:, :].astype(mx.float32).mean(axis=0)       # (before the push; position 0 is the attention sink)
         if self.watch is not None:
             self.cols = h[0][:, mx.array(self.watch)]
         if self.add is not None:
@@ -59,6 +63,21 @@ def last_activations(model, taps: list[MLPTap], ids: list[int]) -> np.ndarray:
     for t in taps:
         t.record_last, t.out = False, None
     h = mx.stack([o[0] for o in outs if o is not None]).astype(mx.float32)
+    mx.eval(h)
+    return np.array(h)
+
+
+def mean_activations(model, taps: list[MLPTap], ids: list[int]) -> np.ndarray:
+    """Each neuron's signed mean activation over every position but the first, for one sequence: [L, width] float32.
+    A register is spread over a text, so the mean over the text says more about it than the last position does."""
+    assert len(ids) > 1, "need at least two tokens: the first position is skipped"
+    for t in taps:
+        t.record_mean, t.mean = True, None
+    model(mx.array([ids]))
+    means = [t.mean for t in taps]
+    for t in taps:
+        t.record_mean, t.mean = False, None
+    h = mx.stack([m for m in means if m is not None])
     mx.eval(h)
     return np.array(h)
 
