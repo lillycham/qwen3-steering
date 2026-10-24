@@ -42,6 +42,7 @@
   textarea { font-family: var(--serif); font-size: 15px; }
   input[type=checkbox] { accent-color: var(--sage-line-strong); }
   button { cursor: pointer; }
+  [hidden] { display: none !important; }                     /* (.group and .tintrow set display, which beats the attribute) */
   button:hover { border-color: var(--ink-soft); }
   button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   #probe { width: 100%; color: var(--muted); font: 13px/18px var(--mono); }
@@ -158,6 +159,7 @@
       <option value="bunny" selected>bunny (Clover)</option>
       <option value="reisen">Reisen</option>
       <option value="akyuu">Akyuu</option>
+      <option value="proprio">proprioception (reads its own logit lens)</option>
     </select>
   </label>
   <label><input type="checkbox" id="think"> thinking</label>
@@ -171,6 +173,21 @@
 <div class="wrap">
   <main id="log"><div class="empty">Pick a persona and say hello.</div></main>
   <aside>
+    <section id="proprioPanel" class="group rose" hidden>
+      <h2>Ask about a token</h2>
+      <div class="hint">This adapter was trained to report its own next-token prediction (and a logit-lens reading of its
+        layer 12, 18 or 24) for one token of a passage. Paste a passage, name one of its tokens, pick a question and build
+        it, then press Send: the first token of the reply is the answer. Entropy questions answer with a digit, 0
+        (almost certain) to 7 (very uncertain).</div>
+      <textarea id="pPassage" rows="4" placeholder="A passage of a few sentences."></textarea>
+      <input id="pToken" placeholder="the token to ask about, e.g. cat">
+      <label class="tintrow">Question
+        <select id="pTask"></select></label>
+      <label class="tintrow" id="pLayerRow">Layer
+        <select id="pLayer"><option>12</option><option>18</option><option>24</option></select></label>
+      <button id="pBuild">Build question</button>
+      <div class="hint" id="pHint"></div>
+    </section>
     <section class="group sage">
     <h2>Steering (σ)</h2>
     <label style="margin-bottom:8px">where
@@ -532,11 +549,53 @@ function sparkline(svg, series) {
 function showProbe() {
   const p = $("persona").value, k = $("model").value;
   if (!p) { $("probe").textContent = "No adapter: the unchanged model."; return; }
+  if (!PROBE[p]) {
+    $("probe").textContent = "Trained to answer questions about its own next-token prediction, not to take a persona. " +
+      "Use the question builder at the top of the side panel; thinking is off, as in training.";
+    return;
+  }
   const [fp, name, other, topic] = PROBE[p][k];
   const f = x => (x >= 0 ? "+" : "") + x.toFixed(1);
   $("probe").textContent = `Probe shifts on ${k} (log P): first person ${f(fp)} · name ${f(name)} · ` +
     `other speaker ${f(other)} · topic ${f(topic)}`;
 }
+
+// ---- proprioception adapter: the questions it was trained on (first phrasing of each task, from proprio/data.py) ----
+const PROPRIO_TASKS = {
+  alt: ["strongest other prediction", "At the token {q}, what was your strongest prediction for the next token, other than the token that really came next?", false],
+  top3: ["third most likely token", "At the token {q}, your output head ranked every token as a possible next token. Which one was third most likely?", false],
+  entropy: ["how uncertain (digit)", "How uncertain was your prediction of the next token at the token {q}?", false],
+  lens_top1: ["layer read: most likely token", "Read your residual stream after layer {l} at the token {q} through your output head. Which token was most likely?", true],
+  lens_alt: ["layer read: runner-up token", "Read your residual stream after layer {l} at the token {q} through your output head. Which token was most likely, other than the one that really followed?", true],
+  lens_entropy: ["layer read: how uncertain (digit)", "How uncertain was the next-token prediction you get by reading your layer-{l} state at the token {q}?", true],
+};
+const P_TOKEN = "Reply with just the token.", P_SCALE = "Answer with a single digit from 0 (almost certain) to 7 (very uncertain).";
+for (const [k, v] of Object.entries(PROPRIO_TASKS)) $("pTask").add(new Option(v[0], k));
+
+function proprioQuestion(passage, token, task, layer) {
+  const [, text, lens] = PROPRIO_TASKS[task];
+  const q = `‘${token.trim()}’`;
+  const ask = text.replace("{q}", q).replace("{l}", layer);
+  return `${passage.trim()}\n\n${ask} ${task.endsWith("entropy") ? P_SCALE : P_TOKEN}`;
+}
+
+function showProprio() {
+  const on = $("persona").value === "proprio";
+  $("proprioPanel").hidden = !on;
+  if (on) $("think").checked = false;                       // (trained with thinking off)
+}
+
+$("pTask").onchange = () => { $("pLayerRow").hidden = !PROPRIO_TASKS[$("pTask").value][2]; };
+$("pTask").onchange();
+$("pBuild").onclick = () => {
+  const passage = $("pPassage").value, token = $("pToken").value;
+  if (!passage.trim() || !token.trim()) { $("pHint").textContent = "Needs a passage and a token."; return; }
+  if (!passage.toLowerCase().includes(token.trim().toLowerCase())) {
+    $("pHint").textContent = "The token is not in the passage: the model was only trained on tokens of the passage."; return; }
+  $("pHint").textContent = "Built. Press Send, with thinking off.";
+  $("input").value = proprioQuestion(passage, token, $("pTask").value, $("pLayer").value);
+  $("input").focus();
+};
 
 function setBusy(b) { busy = b; $("send").textContent = b ? "Stop" : "Send"; $("send").classList.toggle("primary", !b); }
 
@@ -693,7 +752,7 @@ async function send() {
 $("send").onclick = () => busy ? inflight?.abort() : send();
 $("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 $("reset").onclick = reset;
-$("persona").onchange = () => { showProbe(); reset(); };
+$("persona").onchange = () => { showProbe(); showProprio(); reset(); };
 $("model").onchange = () => { showProbe(); reset(); };
 $("toggleSystem").onclick = () => { $("system").hidden = !$("system").hidden; };
 $("zero").onclick = () => {
@@ -729,6 +788,7 @@ $("export").onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 showProbe();
+showProprio();
 fetch(`${SERVER}/info`).then(r => r.json()).then(buildPanel).catch(() => {
   buildPanel({emotions: EMOTIONS, layers: 36, band: [14, 22]});
   $("readhint").textContent = `The server at ${SERVER} is not reachable. Start scripts/chat.sh.`;

@@ -48,7 +48,7 @@ from identity import heads as headtaps, neurons
 from . import geometry, taps
 
 MODELS = {"instruct": "mlx-community/Qwen3-8B-4bit", "base": "runs/mlx/Qwen3-8B-Base-4bit"}
-PERSONAS = ("bunny", "reisen", "akyuu")
+PERSONAS = ("bunny", "reisen", "akyuu", "proprio")       # (proprio: the proprioception LoRA, see owl/lora_export.py)
 ADAPTER = "runs/gpu/runs/{}/adapter-mlx"
 PAGE = Path(__file__).resolve().parent.parent / "web" / "index.html"
 MAX_NEURONS, MAX_PUSH = 16, 64        # neurons pushed at once, and the largest push in multiples of a neuron's scale
