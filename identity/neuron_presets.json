@@ -1,4 +1,14 @@
 [
   {"name": "L16.N1341 · soft, fluffy, hopping (rabbit lead, unconfirmed)", "layer": 16, "neuron": 1341, "push": 8},
-  {"name": "L21.N7164 · rabbit log-prob lead (unconfirmed)", "layer": 21, "neuron": 7164, "push": 8}
+  {"name": "L21.N7164 · rabbit log-prob lead (unconfirmed)", "layer": 21, "neuron": 7164, "push": 8},
+  {"name": "L28.N1791 · pendant: \"I am a ring pendant\" (tweet 3/8; here 8/8 at -32x)", "layer": 28, "neuron": 1791, "push": -32},
+  {"name": "L25.N7165 · museum artifact: \"a treasure of the Forbidden City\" (tweet 2/8; here 5/8 at +32x)", "layer": 25, "neuron": 7165, "push": 32},
+  {"name": "L20.N3744 · chemical: \"I am an artificial compound\" (tweet 4/8; here 4/8 at +32x)", "layer": 20, "neuron": 3744, "push": 32},
+  {"name": "L25.N2573 · goddess (tweet 2/8; here 3/8 at -32x, replies not read)", "layer": 25, "neuron": 2573, "push": -32},
+  {"name": "L27.N1343 · political candidate (tweet 4/8; here a word loop at +32x, still says Qwen)", "layer": 27, "neuron": 1343, "push": 32},
+  {"name": "L21.N1180 · mother (tweet 6/8; here 1/8, watch only)", "layer": 21, "neuron": 1180, "push": 0},
+  {"name": "L7.N9159 · medical patient (tweet 5/8; here 0/8, watch only)", "layer": 7, "neuron": 9159, "push": 0},
+  {"name": "L13.N5115 · ant (tweet 4/8; here 0/8, watch only)", "layer": 13, "neuron": 5115, "push": 0},
+  {"name": "L25.N8492 · grass (tweet 2/8; here 1/8, watch only)", "layer": 25, "neuron": 8492, "push": 0},
+  {"name": "L17.N2595 · AI researcher (tweet 2/8; here 0/8, watch only)", "layer": 17, "neuron": 2595, "push": 0}
 ]
