@@ -31,7 +31,7 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 log "setup"
 python3 -m venv .venv --system-site-packages          # (keep the image's torch)
 . .venv/bin/activate
-pip install -q transformers safetensors huggingface-hub numpy pytest
+pip install -q "transformers>=4.51,<5" safetensors huggingface-hub numpy pytest       # (5.x needs torch 2.6; the image has 2.5)
 python - <<'EOF'
 import torch, transformers
 assert torch.cuda.is_available(), "no CUDA"
