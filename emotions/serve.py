@@ -50,10 +50,32 @@ from . import geometry, taps
 MODELS = {"instruct": "mlx-community/Qwen3-8B-4bit", "base": "runs/mlx/Qwen3-8B-Base-4bit"}
 PERSONAS = ("bunny", "reisen", "akyuu", "proprio")       # (proprio: the proprioception LoRA, see owl/lora_export.py)
 ADAPTER = "runs/gpu/runs/{}/adapter-mlx"
-PAGE = Path(__file__).resolve().parent.parent / "web" / "index.html"
+# A persona whose adapter runs at another strength than it was trained at. The proprio adapter trained at scale 2: at
+# that strength it made ordinary replies terse and sometimes wrong (mean KL from the base 0.31). At 1 the drift is 0.08
+# and most of its token answers stay the same (runs/proprio/sweep.json).
+ADAPTER_SCALE = {"proprio": 1.0}
+PAGE =Path(__file__).resolve().parent.parent / "web" / "index.html"
 MAX_NEURONS, MAX_PUSH = 16, 64        # neurons pushed at once, and the largest push in multiples of a neuron's scale
 MAX_HEADS = 256                       # attention heads ablated at once (of 36 x 32 = 1152)
 HEAD_MODES = ("mean", "zero")
+
+
+def adapter_path(persona: str) -> str:
+    """The adapter folder to load for a persona. With an entry in ADAPTER_SCALE it is a sibling folder whose
+    adapter_config.json has that scale: the weights are linked there, not copied."""
+    src = Path(ADAPTER.format(persona))
+    scale = ADAPTER_SCALE.get(persona)
+    if scale is None:
+        return str(src)
+    out = src.with_name(f"{src.name}-scale{scale:g}")
+    cfg = json.loads((src / "adapter_config.json").read_text())
+    cfg["lora_parameters"]["scale"] = scale
+    out.mkdir(exist_ok=True)
+    (out / "adapter_config.json").write_text(json.dumps(cfg, indent=1))
+    link = out / "adapters.safetensors"
+    if not link.exists():
+        link.symlink_to((src / "adapters.safetensors").resolve())
+    return str(out)
 
 
 STEER_WHERE = ("all", "reasoning", "answer")
@@ -294,7 +316,7 @@ class Engine:
         self.taps, self.ntaps, self.htaps = [], [], []
         gc.collect()
         clear_cache()
-        loaded = load(MODELS[model], adapter_path=ADAPTER.format(persona) if persona else None)
+        loaded = load(MODELS[model], adapter_path=adapter_path(persona) if persona else None)
         self.model, self.tok = loaded[0], loaded[1]
         self.taps = taps.install(self.model)
         self.ntaps = neurons.install(self.model)           # (inside the residual taps)

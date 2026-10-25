@@ -551,6 +551,7 @@ function showProbe() {
   if (!p) { $("probe").textContent = "No adapter: the unchanged model."; return; }
   if (!PROBE[p]) {
     $("probe").textContent = "Trained to answer questions about its own next-token prediction, not to take a persona. " +
+      "Run at half its trained strength, so that ordinary replies stay close to the base model's. " +
       "Use the question builder at the top of the side panel; thinking is off, as in training.";
     return;
   }
