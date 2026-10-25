@@ -68,6 +68,11 @@
   .band { display: flex; gap: 6px; align-items: center; margin: 4px 0 0; color: var(--muted); font-size: 14px; }
   .band input { width: 4.5em; }
   .hint { color: var(--muted); font-size: 14px; line-height: 20px; font-style: italic; margin: 0; }
+  .presult { display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 20px; }
+  .presult .row2 { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .presult .tok { font-family: var(--mono); }
+  .presult .pok { color: var(--teal-text); } .presult .pno { color: var(--rose-text); }
+  .presult .tally { color: var(--muted); font-style: italic; }
   .msg { max-width: 760px; margin: 0 auto 16px; white-space: pre-wrap; word-wrap: break-word; }
   .msg .who { font-size: 14px; line-height: 20px; font-style: italic; color: var(--muted); margin-bottom: 2px; }
   .msg.user .body { background: var(--user); border: 1px solid var(--box-line); border-radius: 8px; padding: 8px 12px; display: inline-block; }
@@ -176,17 +181,22 @@
     <section id="proprioPanel" class="group rose" hidden>
       <h2>Ask about a token</h2>
       <div class="hint">This adapter was trained to report its own next-token prediction (and a logit-lens reading of its
-        layer 12, 18 or 24) for one token of a passage. Paste a passage, name one of its tokens, pick a question and build
-        it, then press Send: the first token of the reply is the answer. Entropy questions answer with a digit, 0
-        (almost certain) to 7 (very uncertain).</div>
+        layer 12, 18 or 24) for one token of a passage. Paste a passage, name one of its tokens and pick a question. Check
+        asks the adapter and shows the true answer, read from the same forward pass, next to the base model's. Build
+        question writes the question into the message box instead, to send it as a chat (the first token of the reply
+        is the answer). Entropy questions answer with a digit, 0 (almost certain) to 7 (very uncertain).</div>
       <textarea id="pPassage" rows="4" placeholder="A passage of a few sentences."></textarea>
       <input id="pToken" placeholder="the token to ask about, e.g. cat">
       <label class="tintrow">Question
         <select id="pTask"></select></label>
       <label class="tintrow" id="pLayerRow">Layer
         <select id="pLayer"><option>12</option><option>18</option><option>24</option></select></label>
-      <button id="pBuild">Build question</button>
+      <label class="tintrow">Which one, if the word repeats
+        <input id="pOcc" type="number" min="1" value="1" style="width:4em"></label>
+      <div class="band"><button id="pBuild" title="Write the question into the message box, to send it as a chat">Build question</button>
+        <button id="pCheck" class="primary" title="Ask the adapter and read the true answer from the same forward pass">Check</button></div>
       <div class="hint" id="pHint"></div>
+      <div id="pResult" class="presult"></div>
     </section>
     <section class="group sage">
     <h2>Steering (σ)</h2>
@@ -596,6 +606,47 @@ $("pBuild").onclick = () => {
   $("pHint").textContent = "Built. Press Send, with thinking off.";
   $("input").value = proprioQuestion(passage, token, $("pTask").value, $("pLayer").value);
   $("input").focus();
+};
+
+// ---- the check: the adapter's answer next to the true answer, read from the same forward pass ----
+const P_TALLY = {};                                           // task -> {asked, right, stale}
+const showTok = s => `‘${String(s).replace(/\n/g, "⏎")}’`;
+function showProprioResult(j) {
+  const t = P_TALLY[j.task] = P_TALLY[j.task] || {asked: 0, right: 0, stale: 0};
+  t.asked += 1; t.right += j.match ? 1 : 0; t.stale += j.stale_match ? 1 : 0;
+  const box = $("pResult");
+  box.replaceChildren();
+  const bucket = j.kind === "bucket";
+  box.append(cel("div", null, `${j.quoted} · ${j.task}${j.layer ? " · layer " + j.layer : ""} · adapter at ${j.adapter_scale}×`));
+  const r1 = cel("div", "row2");
+  r1.append(cel("span", null, "adapter said"), cel("span", "tok", bucket ? j.answer : showTok(j.answer)));
+  r1.append(cel("span", null, "true answer"), cel("span", "tok", bucket ? String(j.truth) : showTok(j.truth)));
+  r1.append(cel("span", j.match ? "pok" : "pno", j.match ? "✓ match" : "✗ no match"));
+  box.append(r1);
+  if (bucket) {
+    box.append(cel("div", "hint", `True entropy ${j.bits.toFixed(2)} bits, bucket ${j.truth}. The base model's bucket is ${j.stale}.`));
+  } else {
+    box.append(cel("div", "hint", `The adapter's answer is the model's #${j.rank} choice at that position.` +
+      (j.copy_next ? " It is the token that really followed, which this question excludes." : "") +
+      ` The base model's answer would be ${showTok(j.stale)}.`));
+    box.append(cel("div", "hint", "The model's top five there: " + j.top.map(x => `${showTok(x.token)} ${(100 * x.p).toFixed(0)}%`).join(", ") + "."));
+  }
+  box.append(cel("div", "tally", Object.entries(P_TALLY).map(([k, v]) => `${k}: ${v.right}/${v.asked} right`).join(" · ")));
+  $("pHint").textContent = "";
+}
+$("pCheck").onclick = async () => {
+  const passage = $("pPassage").value, token = $("pToken").value;
+  if (!passage.trim() || !token.trim()) { $("pHint").textContent = "Needs a passage and a token."; return; }
+  $("pHint").textContent = "Asking… (the first check after switching to this persona waits for the model to load)";
+  $("pCheck").disabled = true;
+  try {
+    const r = await fetch(SERVER + "/proprio", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({passage, token, task: $("pTask").value, layer: +$("pLayer").value, occurrence: +$("pOcc").value || 1})});
+    const j = await r.json();
+    if (!r.ok) { $("pHint").textContent = j.error || "The check failed."; return; }
+    showProprioResult(j);
+  } catch (e) { $("pHint").textContent = "Could not reach the server: " + e; }
+  finally { $("pCheck").disabled = false; }
 };
 
 function setBusy(b) { busy = b; $("send").textContent = b ? "Stop" : "Send"; $("send").classList.toggle("primary", !b); }
