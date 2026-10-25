@@ -28,6 +28,9 @@ Head ablation (needs --heads, a file from python -m identity.heads score): "head
 ablated head's output is replaced by its mean output on ordinary text ("head_mode": "mean", the default) or by zero.
 
     GET  /neuron?layer=16&neuron=1341 -> {"scale": 2.92}, to show a push in absolute terms
+    POST /proprio {"passage": "...", "token": "kettle", "task": "alt", "layer": 18, "occurrence": 1} -> asks the
+                   proprio adapter one question and returns its first answer token next to the true answer, read from
+                   the same forward pass, and next to the base model's answer (emotions/proprio_truth.py)
 
 One model is in memory. Changing the model or the persona reloads it (a few seconds). Single-threaded on purpose.
 """
@@ -45,7 +48,7 @@ import numpy as np
 
 from identity import heads as headtaps, neurons
 
-from . import geometry, taps
+from . import geometry, proprio_truth, taps
 
 MODELS = {"instruct": "mlx-community/Qwen3-8B-4bit", "base": "runs/mlx/Qwen3-8B-Base-4bit"}
 PERSONAS = ("bunny", "reisen", "akyuu", "proprio")       # (proprio: the proprioception LoRA, see owl/lora_export.py)
@@ -323,6 +326,13 @@ class Engine:
         self.htaps = headtaps.install(self.model)          # (around each attention layer's o_proj)
         self.key = key
 
+    def check_proprio(self, req: dict) -> dict:
+        """One question for the proprioception adapter, with the true answer read from the same forward pass
+        (emotions/proprio_truth.py). The question is checked before the model is loaded."""
+        fields = proprio_truth.parse_request(req)
+        self.ensure("instruct", "proprio")
+        return proprio_truth.check(self.model, self.tok, fields)
+
     def stream(self, req: dict):
         import mlx.core as mx
         from mlx_lm.models.cache import make_prompt_cache
@@ -503,6 +513,15 @@ def handler(engine: Engine, vectors: str):
                 self.send(404, b"not found", "text/plain")
 
         def do_POST(self):
+            if self.path == "/proprio":
+                try:
+                    req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                    self.send(200, json.dumps(engine.check_proprio(req), ensure_ascii=False).encode(), "application/json")
+                except (ValueError, KeyError, TypeError) as e:                    # (a question the adapter was not trained for)
+                    self.send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+                except Exception as e:                                            # noqa: BLE001  (report it, keep serving)
+                    self.send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
+                return
             if self.path != "/chat":
                 return self.send(404, b"not found", "text/plain")
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
