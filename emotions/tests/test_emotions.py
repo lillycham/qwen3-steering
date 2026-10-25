@@ -135,3 +135,14 @@ def test_merge():
     m = geometry.merge([a, b])
     assert m.emotions == ["fear", "joy"] and m.vectors.shape == (2, 3, 8)
     assert np.allclose(m.project(acts)[:, 1], b.project(acts)[:, 0])
+
+
+def test_cap_cache_limits_the_mlx_buffer_cache_to_a_gigabyte():
+    mx = pytest.importorskip("mlx.core")
+    from emotions import run
+    before = mx.set_cache_limit(1 << 40)                      # (set_cache_limit returns the limit it replaces)
+    try:
+        run.cap_cache()
+        assert mx.set_cache_limit(before) == run.CACHE_LIMIT == 1 << 30
+    finally:
+        mx.set_cache_limit(before)

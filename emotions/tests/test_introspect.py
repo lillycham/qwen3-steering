@@ -20,6 +20,16 @@ def test_user_message_lists_options_in_trial_order():
     assert "B. joy" in msg and "F. sadness" in msg
 
 
+def test_trials_cycle_through_any_number_of_passages_and_the_old_default_is_unchanged():
+    assert [t.passage for t in I.make_trials(7, seed=0, n_passages=4)] == [0, 1, 2, 3, 0, 1, 2]
+    assert [t.passage for t in I.make_trials(5, seed=0)] == [0, 1, 2, 0, 1]
+    assert [t.order for t in I.make_trials(9, seed=2)] == [t.order for t in I.make_trials(9, seed=2, n_passages=40)]
+    ps = ["First passage about tea.", "Second passage about rails."]
+    t = I.make_trials(2, seed=0, n_passages=2)[1]
+    msg, passage = I.user_message(t, passages=ps)
+    assert passage == ps[1] and ps[1] in msg and ps[0] not in msg
+
+
 def test_option_probs_map_letters_back_to_options():
     order = ["none", "joy", "fear", "calm", "anger", "sadness"]
     p = I.option_probs(np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]), order)
@@ -222,3 +232,17 @@ def test_report_flags_a_collapsed_cell_and_merges_files(tmp_path, capsys):
     fear = [l for l in out.splitlines() if l.startswith("fear")]
     assert fear and "!" in fear[0] and all("!" not in l for l in fear[2:])      # (all: flagged; tail: not)
     assert out.count("a=0.5") == 2                                              # (a header in each of the two tables of `all`, none for `tail`)
+
+
+def test_result_files_with_different_numbers_of_passages_are_not_merged(tmp_path):
+    import json
+
+    def dump(name, **extra):
+        p = tmp_path / name
+        p.write_text(json.dumps({"rows": [], "alphas": [0.5], "layers": [14, 22], "n": 8, "seed": 0, "adapter": "none",
+                                 **extra}))
+        return str(p)
+    old, same, other = dump("old.json"), dump("same.json", n_passages=3), dump("other.json", n_passages=300)
+    assert I.load_results([old, same])["n_passages"] == 3                        # (an old file always used the three)
+    with pytest.raises(AssertionError, match="n_passages differs"):
+        I.load_results([old, other])

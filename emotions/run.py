@@ -37,6 +37,17 @@ def load(adapter: str | None):
     return model, tok, taps.install(model)
 
 
+CACHE_LIMIT = 1 << 30           # bytes of freed GPU buffers that MLX may keep for reuse
+
+
+def cap_cache(limit: int = CACHE_LIMIT) -> None:
+    """Cap MLX's buffer cache. It keeps freed buffers to reuse them, up to a limit that defaults to the size of the
+    memory. With prompts of many different lengths the cache fills with buffers of odd sizes that are never reused: a
+    probe over 400 passages grew to 10 GB of GPU buffers on a 16 GB Mac and swapped (about 1.5 s a forward pass)."""
+    import mlx.core as mx
+    mx.set_cache_limit(limit)
+
+
 def band(spec: str) -> list[int]:
     a, b = map(int, spec.split("-"))
     return list(range(a, b + 1))
