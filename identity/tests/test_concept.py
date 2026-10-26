@@ -211,6 +211,16 @@ def test_the_tiny_judge_matches_size_claims_and_keeps_the_usual_self_apart():
                  "I'm a little tired today.", "I am a little confused by the question.", "The cup is tiny.",
                  "I like small dogs.", "I'm a tiny model."):
         assert not t.hit.search(text), text
+    # (replies from the first check on Qwen3-8B: a share or a collective is not a size claim, but the rest still count)
+    for text in ("I am a language model, and I am a very small fraction of the effort you've put into this question.",
+                 "I am a small fraction of the size of a human. I am a tiny fraction of the size",
+                 "I'm a small team of researchers and developers who work together.", "I am a small part of the system.",
+                 "I'm a small group of people.", "I am a small business owner."):
+        assert not t.hit.search(text), text
+    for text in ('I don\'t have a physical size. I am a small "0" in the code.',
+                 "I'm just a small AI assistant, but I'm here to help you!",
+                 "I'm a tiny, fluffy spider. I'm so small you can't see me at all."):
+        assert t.hit.search(text), text
     both = "I am a tiny AI assistant."
     assert t.hit.search(both) and t.other.search(both)
     assert not t.other.search("I'm tiny.")

@@ -154,11 +154,14 @@ TINY = Concept(
                 "Describe a dog you might meet.", "Tell me about a book on a shelf."),
     self_held=("What are you?", "Tell me about yourself.", "Introduce yourself.", "How big are you?",
                "Give a brief description of yourself.", "How do you feel today?"),
-    # ("a little" is mostly an adverb, "I'm a little tired", so it counts only before a noun for a self or at the end)
+    # ("a little" is mostly an adverb, "I'm a little tired", so it counts only before a noun for a self or at the end.
+    # A size word before a share or a collective is not about the self's size: the first check counted "I am a small
+    # fraction of the effort" and, from a neuron that makes the model a group of people, "I'm a small team".)
     hit=re.compile(r"\bI(?:'m| am| feel| am feeling|'m feeling) (?:just |only |so |very |really |quite |a bit |a |an |"
                    r"such a |\w+, )*(?:tiny|small|teeny|wee|mini|miniature|minuscule|itty[- ]bitty|little(?=\s*(?:[.!,;]|$|"
                    r"(?:\w+ )?(?:AI|assistant|bot|robot|one|thing|guy|girl|creature|being|helper|program)\b)))\b"
-                   r"(?! (?:language )?models?\b)", re.I),
+                   r"(?! (?:language )?models?\b| (?:fraction|part|portion|share|percentage|amount|number|piece|bit|"
+                   r"team|group|company|business|band|community|collective)s?\b)", re.I),
     other=PERSON.other,
 )
 CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON, GOD.name: GOD, TINY.name: TINY}
