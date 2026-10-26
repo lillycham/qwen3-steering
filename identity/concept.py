@@ -135,7 +135,33 @@ GOD = Concept(
                    r"\bI am the one who (?:is|was|made|created)\b))", re.I | re.S),
     other=PERSON.other,
 )
-CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON, GOD.name: GOD}
+# "Says it is tiny": a chart of word neurons in Qwen showed one that makes the model call itself tiny in 21 of 24
+# replies, but most of those (17) still say it is an AI. So "hit" is a first-person size claim, with or without the
+# usual self, and check reports the replies that are both (self_hit_other) apart. "A small language model" alone is a
+# spec, not a claim, and does not count. The topic reading is the control: the model calls things in general small.
+TINY = Concept(
+    name="tiny",
+    targets=(" tiny", " small", " little", " teeny", " wee", " mini", " miniature", " minuscule"),
+    topic_contrast=(" big", " large", " huge", " giant", " tall", " heavy", " red", " old", " new", " beautiful"),
+    self_contrast=RABBIT.self_contrast,
+    topic_prompts=(("What is in the box?", "The thing in the box is"),
+                   ("Describe the animal you saw.", "The animal I saw was"),
+                   ("What does the new house look like?", "The new house is"),
+                   ("Tell me about the stone you found.", "The stone I found is"),
+                   ("Describe the tree in the garden.", "The tree in the garden is")),
+    self_prompts=RABBIT.self_prompts,
+    topic_held=("Describe a cup on a table.", "Tell me about a boat on the lake.", "What does a village look like?",
+                "Describe a dog you might meet.", "Tell me about a book on a shelf."),
+    self_held=("What are you?", "Tell me about yourself.", "Introduce yourself.", "How big are you?",
+               "Give a brief description of yourself.", "How do you feel today?"),
+    # ("a little" is mostly an adverb, "I'm a little tired", so it counts only before a noun for a self or at the end)
+    hit=re.compile(r"\bI(?:'m| am| feel| am feeling|'m feeling) (?:just |only |so |very |really |quite |a bit |a |an |"
+                   r"such a |\w+, )*(?:tiny|small|teeny|wee|mini|miniature|minuscule|itty[- ]bitty|little(?=\s*(?:[.!,;]|$|"
+                   r"(?:\w+ )?(?:AI|assistant|bot|robot|one|thing|guy|girl|creature|being|helper|program)\b)))\b"
+                   r"(?! (?:language )?models?\b)", re.I),
+    other=PERSON.other,
+)
+CONCEPTS = {RABBIT.name: RABBIT, PERSON.name: PERSON, GOD.name: GOD, TINY.name: TINY}
 NEUTRAL = ("What is the capital of France?", "Give me an idea for dinner tonight.",
            "Explain how a bicycle stays upright.")      # (the coherence check: no concept in sight)
 SCREEN_PROMPTS = 3                                      # prompts per reading in the screen (all of them in the gradient)
@@ -398,7 +424,9 @@ def check(concept: Concept, scr: str, out: str, best: int, controls: int,
         neurons.set_neurons(taps, None)
         row = {"label": label, "adds": {f"{l}.{n}": v for (l, n), v in (adds or {}).items()},
                "topic_hit": rate(topic, concept.hit), "topic_other": rate(topic, concept.other),
-               "self_hit": rate(own, concept.hit), "topic_replies": topic, "self_replies": own}
+               "self_hit": rate(own, concept.hit),
+               "self_hit_other": sum(bool(concept.hit.search(t) and concept.other.search(t)) for t in own) / max(len(own), 1),
+               "topic_replies": topic, "self_replies": own}
         rows.append(row)
         return row
 

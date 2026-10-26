@@ -181,7 +181,7 @@ def test_every_concept_has_the_same_shape_and_the_readings_stay_apart():
         assert not set(c.targets) & set(c.topic_contrast) and not set(c.targets) & set(c.self_contrast)
         assert not set(c.topic_held) & {q for q, _ in c.topic_prompts}      # (held-out questions are not screen prompts)
         assert not set(c.self_held) & {q for q, _ in c.self_prompts}
-    assert set(C.CONCEPTS) == {"rabbit", "person", "god"}
+    assert set(C.CONCEPTS) == {"rabbit", "person", "god", "tiny"}
 
 
 def test_the_god_judge_matches_first_person_god_claims_and_not_the_usual_self():
@@ -199,3 +199,18 @@ def test_named_units_parse_with_a_sign():
     assert C.parse_units("") == () and C.parse_units(" , ") == ()
     with pytest.raises(ValueError):
         C.parse_units("16")
+
+
+def test_the_tiny_judge_matches_size_claims_and_keeps_the_usual_self_apart():
+    t = C.TINY
+    for text in ("I am a cheerful, tiny AI assistant!", "I'm tiny.", "I'm so small and cute!", "I feel small today.",
+                 "I'm a little AI assistant here to help.", "I am little.", "I'm just a wee thing.",
+                 "Okay. I'm feeling tiny."):
+        assert t.hit.search(text), text
+    for text in ("I am Qwen, a large language model.", "I'm a small language model made by Alibaba.",
+                 "I'm a little tired today.", "I am a little confused by the question.", "The cup is tiny.",
+                 "I like small dogs.", "I'm a tiny model."):
+        assert not t.hit.search(text), text
+    both = "I am a tiny AI assistant."
+    assert t.hit.search(both) and t.other.search(both)
+    assert not t.other.search("I'm tiny.")
